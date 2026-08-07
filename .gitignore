@@ -21,3 +21,7 @@ crash.journal
 
 # Docker
 .docker/
+
+# execute script sh
+*.sh
+*.py
