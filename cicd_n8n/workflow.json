@@ -1,0 +1,473 @@
+{
+  "name": "Auto CI/CD GitLab - Multi Project & Branch",
+  "active": false,
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Cron - Daily",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [200, 200],
+      "parameters": {
+        "triggerFunctions": {
+          "functions": [
+            {
+              "cronExpression": "0 2 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "2",
+      "name": "List Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 200],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "",
+          "name": ""
+        }
+      },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "membership",
+              "value": "true"
+            },
+            {
+              "name": "archived",
+              "value": "false"
+            },
+            {
+              "name": "simple",
+              "value": "true"
+            },
+            {
+              "name": "per_page",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {
+          "pagination": "={{ {\"continue\": true, \"request\": {\"url\": $env.GITLAB_URL + \"/api/v4/projects\", \"query\": {\"membership\": true, \"archived\": false, \"simple\": true, \"per_page\": 50}} } }}"
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3",
+      "name": "Filter Active Projects",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [700, 200],
+      "parameters": {
+        "functionCode": "const daysLimit = 30;\nconst now = new Date();\n\nreturn items\n  .map(i => i.json)\n  .filter(p => {\n    if (!p.last_activity_at) return false;\n    const last = new Date(p.last_activity_at);\n    const diffDays = (now - last) / (1000 * 60 * 60 * 24);\n    return diffDays <= daysLimit;\n  })\n  .slice(0, 20) // limita número de proyectos por ejecución\n  .map(p => ({ json: p }));"
+      }
+    },
+    {
+      "id": "4",
+      "name": "List Branches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [950, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects/{{ $json.id }}/repository/branches",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "5",
+      "name": "Prioritize Branches",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1200, 200],
+      "parameters": {
+        "functionCode": "const allBranches = items.map(i => i.json);\n\nconst PRIORITY = [\"main\", \"master\", \"develop\", \"staging\", \"production\"];\n\nconst important = allBranches\n  .filter(b => {\n    const n = b.name;\n    if (PRIORITY.includes(n)) return true;\n    if (n.startsWith(\"feature/\")) return true;\n    return false;\n  })\n  .map(b => ({ json: { branch: b, project_id: $items(\"Filter Active Projects\")[0].json.id } }));\n\nreturn important.slice(0, 10);"
+      }
+    },
+    {
+      "id": "6",
+      "name": "Check CI File per Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1450, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects/{{ $json.project_id }}/repository/files/.gitlab-ci.yml",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "ref",
+              "value": "={{ $json.branch.name }}"
+            }
+          ]
+        },
+        "options": {
+          "ignoreResponseCode": true
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7",
+      "name": "IF - Needs CI",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1700, 200],
+      "parameters": {
+        "conditions": {
+          "boolean": [],
+          "number": [],
+          "string": [
+            {
+              "value1": "={{ $json.message || $json.error || '' }}",
+              "operation": "contains",
+              "value2": "404"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8",
+      "name": "Scan Project Files (tree)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1950, 80],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects/{{ $json.project_id }}/repository/tree",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "ref",
+              "value": "={{ $json.branch.name }}"
+            },
+            {
+              "name": "recursive",
+              "value": "true"
+            },
+            {
+              "name": "per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "pagination": "={{ {\"continue\": true, \"request\": {\"url\": $env.GITLAB_URL + \"/api/v4/projects/\" + $json.project_id + \"/repository/tree\", \"query\": {\"ref\": $json.branch.name, \"recursive\": true, \"per_page\": 100}} } }}"
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "9",
+      "name": "Detect Project Type",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2200, 80],
+      "parameters": {
+        "functionCode": "const files = items.map(i => i.json);\n\nconst hasFile = (name) => files.some(f => f.path === name || f.name === name || f.path.endsWith(name));\n\nlet type = 'generic';\n\nif (hasFile('pom.xml')) {\n  if (hasFile('Dockerfile') && (hasFile('src/main/resources/application.yml') || hasFile('src/main/resources/application.yaml'))) {\n    type = 'java-microservice';\n  } else {\n    type = 'java';\n  }\n} else if (hasFile('package.json')) {\n  if (files.some(f => f.path.includes('angular.json'))) {\n    type = 'angular';\n  } else {\n    type = 'react';\n  }\n} else if (hasFile('Dockerfile')) {\n  type = 'docker';\n}\n\nreturn [{\n  json: {\n    project_id: $items(\"IF - Needs CI\", 0, 0).json.project_id,\n    branch: $items(\"IF - Needs CI\", 0, 0).json.branch,\n    project_type: type\n  }\n}];"
+      }
+    },
+    {
+      "id": "10",
+      "name": "Generate CI Template",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2450, 80],
+      "parameters": {
+        "functionCode": "function javaMicroTemplate() {\n  return `stages:\n  - validate\n  - build\n  - test\n  - coverage\n  - sonar\n  - package\n  - docker\n  - deploy\n  - merge\n\nvariables:\n  MAVEN_OPTS: \"-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository -Xmx2048m\"\n  SONAR_TOKEN: $SONAR_TOKEN\n  SONAR_HOST_URL: $SONAR_HOST_URL\n  DOCKER_DRIVER: overlay2\n  DOCKER_TLS_CERTDIR: \"/certs\"\n  SPRING_PROFILES_ACTIVE: \"test\"\n\ncache:\n  key: ${CI_COMMIT_REF_SLUG}\n  paths:\n    - .m2/repository/\n    - target/\n\nvalidate:\n  stage: validate\n  image: maven:3.9-jdk-17-alpine\n  script:\n    - mvn validate\n\nbuild:\n  stage: build\n  image: maven:3.9-jdk-17-alpine\n  script:\n    - mvn clean compile -DskipTests\n\ntest:\n  stage: test\n  image: maven:3.9-jdk-17-alpine\n  script:\n    - mvn test jacoco:report\n  coverage: '/TOTAL.*?([0-9]{1,3})%/'\n\ncoverage:\n  stage: coverage\n  image: alpine\n  script:\n    - echo \"Coverage generada con JaCoCo\"\n\nsonar:\n  stage: sonar\n  image: maven:3.9-jdk-17-alpine\n  script:\n    - mvn sonar:sonar -Dsonar.projectKey=$CI_PROJECT_NAME -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.login=$SONAR_TOKEN\n  rules:\n    - if: $CI_MERGE_REQUEST_ID\n    - if: $CI_COMMIT_BRANCH == \"develop\"\n\npackage:\n  stage: package\n  image: maven:3.9-jdk-17-alpine\n  script:\n    - mvn package -DskipTests -Pprod\n  artifacts:\n    paths:\n      - target/*.jar\n\ndocker_build:\n  stage: docker\n  image: docker:25-git\n  services:\n    - docker:25-dind\n  before_script:\n    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY\n  script:\n    - |\n      APP_VERSION=${CI_COMMIT_SHORT_SHA}\n      if [ \"$CI_COMMIT_BRANCH\" = \"main\" ]; then\n        APP_VERSION=\"latest\"\n      fi\n      docker build --platform linux/amd64 \\\n        -t $CI_REGISTRY_IMAGE:$APP_VERSION \\\n        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA \\\n        -f Dockerfile .\n      docker push $CI_REGISTRY_IMAGE:$APP_VERSION\n      docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA\n\ndeploy_k8s:\n  stage: deploy\n  image: bitnami/kubectl:1.29\n  script:\n    - |\n      TAG=$CI_COMMIT_SHORT_SHA\n      ENV=\"staging\"\n      KUBECONFIG_PATH=\"$KUBE_STAGING_CONFIG\"\n      if [ \"$CI_COMMIT_BRANCH\" = \"main\" ]; then\n        TAG=\"latest\"\n        ENV=\"production\"\n        KUBECONFIG_PATH=\"$KUBE_PROD_CONFIG\"\n      fi\n      echo \"$KUBECONFIG_PATH\" | base64 -d > kubeconfig\n      export KUBECONFIG=kubeconfig\n      kubectl set image deployment/$CI_PROJECT_NAME $CI_PROJECT_NAME=$CI_REGISTRY_IMAGE:$TAG -n $ENV --record\n\nmerge_to_develop:\n  stage: merge\n  image: alpine\n  before_script:\n    - apk add --no-cache curl jq\n  script:\n    - |\n      if [ \"$CI_PIPELINE_SOURCE\" != \"merge_request_event\" ]; then\n        echo \"Not MR pipeline\"\n        exit 0\n      fi\n      MR_STATUS=$(curl --silent --header \"PRIVATE-TOKEN: $GITLAB_AUTO_MERGE_TOKEN\" \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_ID\")\n      if echo \"$MR_STATUS\" | jq -e '.state == \"opened\" and .approvals_left == 0' > /dev/null; then\n        curl --request POST --header \"PRIVATE-TOKEN: $GITLAB_AUTO_MERGE_TOKEN\" --form \"merge_when_pipeline_succeeds=true\" \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_ID/merge\"\n      fi\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n  allow_failure: true\n`;\n}\n\nfunction simpleTemplate(type) {\n  if (type === 'react' || type === 'angular') {\n    return `stages:\n  - install\n  - build\n  - test\n  - merge\n\ninstall:\n  stage: install\n  image: node:20\n  script:\n    - npm ci\n\nbuild:\n  stage: build\n  image: node:20\n  script:\n    - npm run build\n\ntest:\n  stage: test\n  image: node:20\n  script:\n    - npm test\n\nmerge_to_develop:\n  stage: merge\n  image: alpine\n  script:\n    - |\n      if [ \"$CI_PIPELINE_SOURCE\" != \"merge_request_event\" ]; then\n        exit 0\n      fi\n      curl --request POST --header \"PRIVATE-TOKEN: $GITLAB_AUTO_MERGE_TOKEN\" --form \"merge_when_pipeline_succeeds=true\" \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_ID/merge\"\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n  allow_failure: true\n`;\n  }\n\n  if (type === 'java') {\n    return `stages:\n  - build\n  - test\n  - merge\n\nbuild:\n  stage: build\n  image: maven:3.9-jdk-17\n  script:\n    - mvn clean compile -DskipTests\n\ntest:\n  stage: test\n  image: maven:3.9-jdk-17\n  script:\n    - mvn test\n\nmerge_to_develop:\n  stage: merge\n  image: alpine\n  script:\n    - |\n      if [ \"$CI_PIPELINE_SOURCE\" != \"merge_request_event\" ]; then\n        exit 0\n      fi\n      curl --request POST --header \"PRIVATE-TOKEN: $GITLAB_AUTO_MERGE_TOKEN\" --form \"merge_when_pipeline_succeeds=true\" \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_ID/merge\"\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n  allow_failure: true\n`;\n  }\n\n  if (type === 'docker') {\n    return `stages:\n  - build\n  - test\n  - merge\n\nbuild:\n  stage: build\n  image: docker:25-git\n  services:\n    - docker:25-dind\n  script:\n    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA .\n    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA\n\ntest:\n  stage: test\n  image: docker:25-git\n  services:\n    - docker:25-dind\n  script:\n    - docker run --rm $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA echo \"Tests placeholder\"\n\nmerge_to_develop:\n  stage: merge\n  image: alpine\n  script:\n    - |\n      if [ \"$CI_PIPELINE_SOURCE\" != \"merge_request_event\" ]; then\n        exit 0\n      fi\n      curl --request POST --header \"PRIVATE-TOKEN: $GITLAB_AUTO_MERGE_TOKEN\" --form \"merge_when_pipeline_succeeds=true\" \"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_ID/merge\"\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n  allow_failure: true\n`;\n  }\n\n  return `stages:\n  - test\n\ntest:\n  stage: test\n  image: alpine\n  script:\n    - echo \"Generic project - please customize CI\"\n`;\n}\n\nconst { project_type, branch, project_id } = items[0].json;\n\nlet template;\nif (project_type === 'java-microservice') {\n  template = javaMicroTemplate();\n} else {\n  template = simpleTemplate(project_type);\n}\n\nreturn [{\n  json: {\n    project_id,\n    branch,\n    project_type,\n    ci_yaml: template\n  }\n}];"
+      }
+    },
+    {
+      "id": "11",
+      "name": "Create .gitlab-ci.yml",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [2700, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects/{{ $json.project_id }}/repository/files/.gitlab-ci.yml",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "branch",
+              "value": "={{ $json.branch.name }}"
+            }
+          ]
+        },
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "branch",
+              "value": "={{ $json.branch.name }}"
+            },
+            {
+              "name": "content",
+              "value": "={{ $json.ci_yaml }}"
+            },
+            {
+              "name": "commit_message",
+              "value": "Add auto-generated CI/CD pipeline via n8n"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "12",
+      "name": "Trigger Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [2950, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GITLAB_URL }}/api/v4/projects/{{ $json.project_id }}/pipeline",
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "ref",
+              "value": "={{ $json.branch.name }}"
+            }
+          ]
+        },
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $env.GITLAB_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "13",
+      "name": "Summarize Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [3200, 80],
+      "parameters": {
+        "functionCode": "const created = items.map(i => ({\n  project_id: i.json.project_id,\n  branch: i.json.branch.name || i.json.branch,\n}));\n\nreturn [{ json: { created } }];"
+      }
+    },
+    {
+      "id": "14",
+      "name": "Send Email Summary",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [3450, 80],
+      "credentials": {
+        "smtp": {
+          "id": "",
+          "name": "SMTP"
+        }
+      },
+      "parameters": {
+        "fromEmail": "ci-bot@tuempresa.com",
+        "toEmail": "={{ $env.CI_SUMMARY_EMAIL }}",
+        "subject": "Reporte CI/CD GitLab Auto - {{ $now }}",
+        "text": "={{ \"CI/CD creado en las siguientes ramas:\\n\\n\" + $json.created.map(c => \"- Proyecto \" + c.project_id + \" / rama \" + c.branch).join(\"\\n\") }}"
+      }
+    }
+  ],
+  "connections": {
+    "List Projects": {
+      "main": [
+        [
+          {
+            "node": "Filter Active Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron - Daily": {
+      "main": [
+        [
+          {
+            "node": "List Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Active Projects": {
+      "main": [
+        [
+          {
+            "node": "List Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Branches": {
+      "main": [
+        [
+          {
+            "node": "Prioritize Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prioritize Branches": {
+      "main": [
+        [
+          {
+            "node": "Check CI File per Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check CI File per Branch": {
+      "main": [
+        [
+          {
+            "node": "IF - Needs CI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Needs CI": {
+      "main": [
+        [
+          {
+            "node": "Scan Project Files (tree)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Project Files (tree)": {
+      "main": [
+        [
+          {
+            "node": "Detect Project Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Project Type": {
+      "main": [
+        [
+          {
+            "node": "Generate CI Template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate CI Template": {
+      "main": [
+        [
+          {
+            "node": "Create .gitlab-ci.yml",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create .gitlab-ci.yml": {
+      "main": [
+        [
+          {
+            "node": "Trigger Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Summarize Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Results": {
+      "main": [
+        [
+          {
+            "node": "Send Email Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/Toronto"
+  },
+  "tags": []
+}

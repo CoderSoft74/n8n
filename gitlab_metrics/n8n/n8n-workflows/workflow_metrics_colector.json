@@ -1,0 +1,592 @@
+{
+  "name": "GitLab Team Metrics Collector",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "={{$credentials.gitlabUrl}}/api/v4/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "={{$credentials.gitlabToken}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{$credentials.gitlabToken}}"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "maxRequests": 10,
+            "limit": 0
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false
+            }
+          },
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "per_page",
+                "value": "100"
+              }
+            ]
+          }
+        }
+      },
+      "id": "get-users",
+      "name": "Get GitLab Users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [300, 500],
+      "credentials": {
+        "genericCredentialType": {
+          "id": "1",
+          "name": "GitLab Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.username}}",
+              "operation": "contains",
+              "value2": "dev"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "filter-developers",
+      "name": "Filter Developers",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [500, 500]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "users",
+        "columns": "gitlab_id,username,name,email,avatar_url,last_sync",
+        "onConflict": "gitlab_id",
+        "onConflictUpdateColumns": "username,name,email,avatar_url,last_sync",
+        "options": {}
+      },
+      "id": "save-users-db",
+      "name": "Save Users to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [700, 500],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Para cada usuario, obtener sus proyectos\nconst userIds = items.map(item => item.json.id);\nreturn userIds.map(userId => ({\n  json: { userId }\n}));",
+        "jsCode": "// Para cada usuario, obtener sus proyectos\nconst userIds = items.map(item => item.json.id);\nreturn userIds.map(userId => ({\n  json: { userId }\n}));"
+      },
+      "id": "prepare-user-ids",
+      "name": "Prepare User IDs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [300, 700]
+    },
+    {
+      "parameters": {
+        "url": "={{$credentials.gitlabUrl}}/api/v4/users/{{$json.userId}}/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "={{$credentials.gitlabToken}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{$credentials.gitlabToken}}"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "maxRequests": 5,
+            "limit": 0
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false
+            }
+          },
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "per_page",
+                "value": "100"
+              },
+              {
+                "name": "membership",
+                "value": "true"
+              },
+              {
+                "name": "simple",
+                "value": "false"
+              }
+            ]
+          }
+        }
+      },
+      "id": "get-user-projects",
+      "name": "Get User Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 700],
+      "credentials": {
+        "genericCredentialType": {
+          "id": "1",
+          "name": "GitLab Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "projects",
+        "columns": "gitlab_id,name,name_with_namespace,description,web_url,default_branch,visibility,last_activity_at,created_at_gitlab,updated_at_gitlab",
+        "onConflict": "gitlab_id",
+        "onConflictUpdateColumns": "name,name_with_namespace,description,web_url,default_branch,visibility,last_activity_at,updated_at_gitlab",
+        "options": {}
+      },
+      "id": "save-projects-db",
+      "name": "Save Projects to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [700, 700],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Crear relaciones usuario-proyecto\nconst relations = [];\nfor (const item of items) {\n  const userId = item.json.userId;\n  const projects = item.json.projects || [];\n  \n  for (const project of projects) {\n    relations.push({\n      json: {\n        user_gitlab_id: userId,\n        project_gitlab_id: project.id,\n        access_level: project.access_level,\n        project_name: project.name\n      }\n    });\n  }\n}\nreturn relations;",
+        "jsCode": "// Crear relaciones usuario-proyecto\nconst relations = [];\nfor (const item of items) {\n  const userId = item.json.userId;\n  const projects = item.json.projects || [];\n  \n  for (const project of projects) {\n    relations.push({\n      json: {\n        user_gitlab_id: userId,\n        project_gitlab_id: project.id,\n        access_level: project.access_level,\n        project_name: project.name\n      }\n    });\n  }\n}\nreturn relations;"
+      },
+      "id": "prepare-user-projects",
+      "name": "Prepare User-Projects Relations",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [500, 900]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Obtener commits de los últimos 7 días\nconst date = new Date();\ndate.setDate(date.getDate() - 7);\nconst sinceDate = date.toISOString();\n\nreturn items.map(item => ({\n  json: {\n    projectId: item.json.gitlab_id,\n    since: sinceDate\n  }\n}));",
+        "jsCode": "// Obtener commits de los últimos 7 días\nconst date = new Date();\ndate.setDate(date.getDate() - 7);\nconst sinceDate = date.toISOString();\n\nreturn items.map(item => ({\n  json: {\n    projectId: item.json.gitlab_id,\n    since: sinceDate\n  }\n}));"
+      },
+      "id": "prepare-commits-request",
+      "name": "Prepare Commits Request",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [300, 900]
+    },
+    {
+      "parameters": {
+        "url": "={{$credentials.gitlabUrl}}/api/v4/projects/{{$json.projectId}}/repository/commits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "={{$credentials.gitlabToken}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{$credentials.gitlabToken}}"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "maxRequests": 3,
+            "limit": 0
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false
+            }
+          },
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "per_page",
+                "value": "100"
+              },
+              {
+                "name": "since",
+                "value": "={{$json.since}}"
+              },
+              {
+                "name": "with_stats",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      },
+      "id": "get-project-commits",
+      "name": "Get Project Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 1100],
+      "credentials": {
+        "genericCredentialType": {
+          "id": "1",
+          "name": "GitLab Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Procesar commits y extraer métricas\nconst processedCommits = [];\n\nfor (const item of items) {\n  const commits = item.json.commits || [];\n  const projectId = item.json.projectId;\n  \n  for (const commit of commits) {\n    const commitDate = new Date(commit.created_at);\n    \n    processedCommits.push({\n      json: {\n        gitlab_id: commit.id,\n        project_gitlab_id: projectId,\n        title: commit.title,\n        message: commit.message,\n        author_name: commit.author_name,\n        author_email: commit.author_email,\n        created_at_gitlab: commit.created_at,\n        committed_date: commit.committed_date,\n        web_url: commit.web_url,\n        stats_additions: commit.stats?.additions || 0,\n        stats_deletions: commit.stats?.deletions || 0,\n        stats_total: commit.stats?.total || 0,\n        date: commitDate.toISOString().split('T')[0],\n        hour: commitDate.getHours(),\n        weekday: commitDate.getDay()\n      }\n    });\n  }\n}\n\nreturn processedCommits;",
+        "jsCode": "// Procesar commits y extraer métricas\nconst processedCommits = [];\n\nfor (const item of items) {\n  const commits = item.json.commits || [];\n  const projectId = item.json.projectId;\n  \n  for (const commit of commits) {\n    const commitDate = new Date(commit.created_at);\n    \n    processedCommits.push({\n      json: {\n        gitlab_id: commit.id,\n        project_gitlab_id: projectId,\n        title: commit.title,\n        message: commit.message,\n        author_name: commit.author_name,\n        author_email: commit.author_email,\n        created_at_gitlab: commit.created_at,\n        committed_date: commit.committed_date,\n        web_url: commit.web_url,\n        stats_additions: commit.stats?.additions || 0,\n        stats_deletions: commit.stats?.deletions || 0,\n        stats_total: commit.stats?.total || 0,\n        date: commitDate.toISOString().split('T')[0],\n        hour: commitDate.getHours(),\n        weekday: commitDate.getDay()\n      }\n    });\n  }\n}\n\nreturn processedCommits;"
+      },
+      "id": "process-commits-metrics",
+      "name": "Process Commits Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [700, 1100]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "commits",
+        "columns": "gitlab_id,project_id,author_name,author_email,title,message,created_at_gitlab,committed_date,web_url,stats_additions,stats_deletions,stats_total",
+        "onConflict": "gitlab_id",
+        "onConflictUpdateColumns": "title,message,stats_additions,stats_deletions,stats_total",
+        "options": {}
+      },
+      "id": "save-commits-db",
+      "name": "Save Commits to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [900, 1100],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Agregar métricas horarias\nconst hourlyMetrics = {};\n\nfor (const item of items) {\n  const userEmail = item.json.author_email;\n  const date = item.json.date;\n  const hour = item.json.hour;\n  const key = `${userEmail}-${date}-${hour}`;\n  \n  if (!hourlyMetrics[key]) {\n    hourlyMetrics[key] = {\n      author_email: userEmail,\n      date: date,\n      hour: hour,\n      commit_count: 0,\n      additions_total: 0,\n      deletions_total: 0,\n      files_changed_total: 0\n    };\n  }\n  \n  hourlyMetrics[key].commit_count += 1;\n  hourlyMetrics[key].additions_total += item.json.stats_additions || 0;\n  hourlyMetrics[key].deletions_total += item.json.stats_deletions || 0;\n  hourlyMetrics[key].files_changed_total += 1;\n}\n\nreturn Object.values(hourlyMetrics).map(metric => ({ json: metric }));",
+        "jsCode": "// Agregar métricas horarias\nconst hourlyMetrics = {};\n\nfor (const item of items) {\n  const userEmail = item.json.author_email;\n  const date = item.json.date;\n  const hour = item.json.hour;\n  const key = `${userEmail}-${date}-${hour}`;\n  \n  if (!hourlyMetrics[key]) {\n    hourlyMetrics[key] = {\n      author_email: userEmail,\n      date: date,\n      hour: hour,\n      commit_count: 0,\n      additions_total: 0,\n      deletions_total: 0,\n      files_changed_total: 0\n    };\n  }\n  \n  hourlyMetrics[key].commit_count += 1;\n  hourlyMetrics[key].additions_total += item.json.stats_additions || 0;\n  hourlyMetrics[key].deletions_total += item.json.stats_deletions || 0;\n  hourlyMetrics[key].files_changed_total += 1;\n}\n\nreturn Object.values(hourlyMetrics).map(metric => ({ json: metric }));"
+      },
+      "id": "aggregate-hourly-metrics",
+      "name": "Aggregate Hourly Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [700, 1300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "hourly_metrics",
+        "columns": "user_id,date,hour,commit_count,additions_total,deletions_total,files_changed_total",
+        "onConflict": "user_id,date,hour",
+        "onConflictUpdateColumns": "commit_count,additions_total,deletions_total,files_changed_total,updated_at",
+        "options": {}
+      },
+      "id": "save-hourly-metrics",
+      "name": "Save Hourly Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [900, 1300],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calcular métricas diarias\nconst dailyMetrics = {};\n\nfor (const item of items) {\n  const userEmail = item.json.author_email;\n  const date = item.json.date;\n  const key = `${userEmail}-${date}`;\n  \n  if (!dailyMetrics[key]) {\n    dailyMetrics[key] = {\n      author_email: userEmail,\n      date: date,\n      commit_count: 0,\n      additions_total: 0,\n      deletions_total: 0,\n      files_changed_total: 0,\n      hours: new Set()\n    };\n  }\n  \n  dailyMetrics[key].commit_count += 1;\n  dailyMetrics[key].additions_total += item.json.stats_additions || 0;\n  dailyMetrics[key].deletions_total += item.json.stats_deletions || 0;\n  dailyMetrics[key].files_changed_total += 1;\n  dailyMetrics[key].hours.add(item.json.hour);\n}\n\n// Calcular métricas agregadas\nconst result = [];\nfor (const key in dailyMetrics) {\n  const metric = dailyMetrics[key];\n  const avgCommitsPerHour = metric.hours.size > 0 ? metric.commit_count / metric.hours.size : 0;\n  \n  result.push({\n    json: {\n      author_email: metric.author_email,\n      date: metric.date,\n      commit_count: metric.commit_count,\n      additions_total: metric.additions_total,\n      deletions_total: metric.deletions_total,\n      files_changed_total: metric.files_changed_total,\n      avg_commits_per_hour: parseFloat(avgCommitsPerHour.toFixed(2))\n    }\n  });\n}\n\nreturn result;",
+        "jsCode": "// Calcular métricas diarias\nconst dailyMetrics = {};\n\nfor (const item of items) {\n  const userEmail = item.json.author_email;\n  const date = item.json.date;\n  const key = `${userEmail}-${date}`;\n  \n  if (!dailyMetrics[key]) {\n    dailyMetrics[key] = {\n      author_email: userEmail,\n      date: date,\n      commit_count: 0,\n      additions_total: 0,\n      deletions_total: 0,\n      files_changed_total: 0,\n      hours: new Set()\n    };\n  }\n  \n  dailyMetrics[key].commit_count += 1;\n  dailyMetrics[key].additions_total += item.json.stats_additions || 0;\n  dailyMetrics[key].deletions_total += item.json.stats_deletions || 0;\n  dailyMetrics[key].files_changed_total += 1;\n  dailyMetrics[key].hours.add(item.json.hour);\n}\n\n// Calcular métricas agregadas\nconst result = [];\nfor (const key in dailyMetrics) {\n  const metric = dailyMetrics[key];\n  const avgCommitsPerHour = metric.hours.size > 0 ? metric.commit_count / metric.hours.size : 0;\n  \n  result.push({\n    json: {\n      author_email: metric.author_email,\n      date: metric.date,\n      commit_count: metric.commit_count,\n      additions_total: metric.additions_total,\n      deletions_total: metric.deletions_total,\n      files_changed_total: metric.files_changed_total,\n      avg_commits_per_hour: parseFloat(avgCommitsPerHour.toFixed(2))\n    }\n  });\n}\n\nreturn result;"
+      },
+      "id": "calculate-daily-metrics",
+      "name": "Calculate Daily Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [700, 1500]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "daily_metrics",
+        "columns": "user_id,date,commit_count,additions_total,deletions_total,files_changed_total,avg_commits_per_hour",
+        "onConflict": "date",
+        "onConflictUpdateColumns": "commit_count,additions_total,deletions_total,files_changed_total,avg_commits_per_hour,updated_at",
+        "options": {}
+      },
+      "id": "save-daily-metrics",
+      "name": "Save Daily Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [900, 1500],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Obtener diffs para commits importantes (> 100 líneas cambiadas)\nconst importantCommits = items.filter(item => \n  (item.json.stats_total || 0) > 100\n);\n\nreturn importantCommits.map(item => ({\n  json: {\n    commitId: item.json.gitlab_id,\n    projectId: item.json.project_gitlab_id\n  }\n}));",
+        "jsCode": "// Obtener diffs para commits importantes (> 100 líneas cambiadas)\nconst importantCommits = items.filter(item => \n  (item.json.stats_total || 0) > 100\n);\n\nreturn importantCommits.map(item => ({\n  json: {\n    commitId: item.json.gitlab_id,\n    projectId: item.json.project_gitlab_id\n  }\n}));"
+      },
+      "id": "filter-important-commits",
+      "name": "Filter Important Commits",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [500, 1700]
+    },
+    {
+      "parameters": {},
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [100, 500],
+      "webhookId": "gitlab-metrics-schedule"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE users SET last_sync = NOW() WHERE is_active = true",
+        "options": {}
+      },
+      "id": "update-last-sync",
+      "name": "Update Last Sync",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [1100, 500],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get GitLab Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get GitLab Users": {
+      "main": [
+        [
+          {
+            "node": "Filter Developers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Developers": {
+      "main": [
+        [
+          {
+            "node": "Save Users to PostgreSQL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare User IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare User IDs": {
+      "main": [
+        [
+          {
+            "node": "Get User Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User Projects": {
+      "main": [
+        [
+          {
+            "node": "Save Projects to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare User-Projects Relations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare User-Projects Relations": {
+      "main": [
+        [
+          {
+            "node": "Prepare Commits Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Commits Request": {
+      "main": [
+        [
+          {
+            "node": "Get Project Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Project Commits": {
+      "main": [
+        [
+          {
+            "node": "Process Commits Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Commits Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Commits to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Aggregate Hourly Metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Important Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Hourly Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Hourly Metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Calculate Daily Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Daily Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Daily Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Users to PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Update Last Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Projects to DB": {
+      "main": [
+        []
+      ]
+    },
+    "Save Commits to DB": {
+      "main": [
+        []
+      ]
+    },
+    "Save Hourly Metrics": {
+      "main": [
+        []
+      ]
+    },
+    "Save Daily Metrics": {
+      "main": [
+        []
+      ]
+    },
+    "Filter Important Commits": {
+      "main": [
+        []
+      ]
+    },
+    "Update Last Sync": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "triggerCount": 1
+}

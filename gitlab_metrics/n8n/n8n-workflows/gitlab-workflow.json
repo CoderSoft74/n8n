@@ -1,0 +1,251 @@
+{
+  "name": "GitLab Group Metrics Collector (All Projects & Branches)",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/groups/26/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "=REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "properties": {
+              "limitParameter": "per_page",
+              "pageParameter": "page",
+              "pageSize": 100,
+              "maxResults": 500
+            }
+          }
+        }
+      },
+      "id": "start",
+      "name": "Get All Projects from Group (ID:26)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [300, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json['archived']}}",
+              "operation": "false"
+            }
+          ]
+        }
+      },
+      "id": "filter",
+      "name": "Filter Active Repos",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Para cada proyecto, obtener la lista de ramas\nconst now = new Date();\nconst yesterday = new Date(now);\nyesterday.setDate(yesterday.getDate() - 1);\n\nconst projects = items[0].json;\nconst results = [];\n\nfor (const project of projects) {\n  const projectId = project.id;\n  const projectName = project.name;\n  const namespace = project.namespace?.full_path || 'unknown';\n  \n  // Preparar URL para obtener ramas del proyecto\n  const branchesUrl = `http://172.24.7.110/api/v4/projects/${projectId}/repository/branches`;\n  \n  results.push({\n    projectId,\n    projectName,\n    namespace,\n    branchesUrl\n  });\n}\n\nreturn results.map(item => ({\n  json: item\n}));"
+      },
+      "id": "prepare-projects",
+      "name": "Prepare Project & Branch URLs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "simple": false
+        }
+      },
+      "id": "http-get-branches",
+      "name": "Get Branches for Each Project",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Para cada rama en cada proyecto, preparar URL de commits\nconst results = [];\nconst now = new Date();\nconst yesterday = new Date(now);\nyesterday.setDate(yesterday.getDate() - 1);\n\nfor (const item of items) {\n  const projectData = item.json;\n  const branches = projectData.branches || [];\n  \n  for (const branch of branches) {\n    const branchName = branch.name;\n    const branchProtected = branch.protected || false;\n    \n    // Crear URL para obtener commits de esta rama (últimas 24h)\n    const commitsUrl = `http://172.24.7.110/api/v4/projects/${projectData.projectId}/repository/commits?ref_name=${encodeURIComponent(branchName)}&since=${yesterday.toISOString()}&until=${now.toISOString()}`;\n    \n    results.push({\n      ...projectData,\n      branchName,\n      branchProtected,\n      commitsUrl\n    });\n  }\n}\n\nreturn results.map(item => ({\n  json: item\n}));"
+      },
+      "id": "prepare-commits-per-branch",
+      "name": "Prepare Commit URLs per Branch",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "simple": false
+        }
+      },
+      "id": "http-request-commits",
+      "name": "Get Commits from Each Branch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Procesar commits por autor, rama, fecha y hora\nconst metrics = {\n  byAuthor: {},\n  byBranch: {},\n  byHour: {},\n  byDate: {},\n  topAuthors: [],\n  topBranches: []\n};\n\nfor (const item of items) {\n  const projectData = item.json;\n  const commits = projectData.commits || [];\n  const { projectId, projectName, namespace, branchName } = projectData;\n  \n  // Inicializar contadores por rama\n  if (!metrics.byBranch[branchName]) {\n    metrics.byBranch[branchName] = {\n      commitCount: 0,\n      linesAdded: 0,\n      linesDeleted: 0,\n      filesChanged: 0,\n      projects: new Set()\n    };\n  }\n  metrics.byBranch[branchName].commitCount += commits.length;\n  metrics.byBranch[branchName].projects.add(projectName);\n  \n  for (const commit of commits) {\n    const authorName = commit.author_name || 'Unknown';\n    const authorEmail = commit.author_email || '';\n    const commitDate = new Date(commit.committed_date || commit.created_at);\n    const dateKey = commitDate.toISOString().split('T')[0];\n    const hourKey = commitDate.getUTCHours(); // Hora UTC\n    \n    // Estadísticas por autor\n    const authorKey = `${authorName}<${authorEmail}>`;\n    if (!metrics.byAuthor[authorKey]) {\n      metrics.byAuthor[authorKey] = {\n        name: authorName,\n        email: authorEmail,\n        commitCount: 0,\n        linesAdded: 0,\n        linesDeleted: 0,\n        filesChanged: 0,\n        branches: new Set(),\n        projects: new Set()\n      };\n    }\n    \n    const authorStats = metrics.byAuthor[authorKey];\n    authorStats.commitCount++;\n    authorStats.branches.add(branchName);\n    authorStats.projects.add(projectName);\n    \n    // Estadísticas por fecha\n    if (!metrics.byDate[dateKey]) {\n      metrics.byDate[dateKey] = {\n        commitCount: 0,\n        uniqueAuthors: new Set(),\n        branches: new Set()\n      };\n    }\n    metrics.byDate[dateKey].commitCount++;\n    metrics.byDate[dateKey].uniqueAuthors.add(authorKey);\n    metrics.byDate[dateKey].branches.add(branchName);\n    \n    // Estadísticas por hora\n    if (!metrics.byHour[hourKey]) {\n      metrics.byHour[hourKey] = {\n        commitCount: 0,\n        hour: hourKey\n      };\n    }\n    metrics.byHour[hourKey].commitCount++;\n    \n    // Obtener estadísticas detalladas del commit (si están disponibles)\n    const stats = commit.stats || {};\n    authorStats.linesAdded += stats.additions || 0;\n    authorStats.linesDeleted += stats.deletions || 0;\n    authorStats.filesChanged += stats.total || 0;\n    \n    metrics.byBranch[branchName].linesAdded += stats.additions || 0;\n    metrics.byBranch[branchName].linesDeleted += stats.deletions || 0;\n    metrics.byBranch[branchName].filesChanged += stats.total || 0;\n  }\n}\n\n// Preparar rankings\nmetrics.topAuthors = Object.values(metrics.byAuthor)\n  .map(a => ({\n    ...a,\n    branches: Array.from(a.branches),\n    projects: Array.from(a.projects),\n    netLines: a.linesAdded - a.linesDeleted\n  }))\n  .sort((a, b) => b.commitCount - a.commitCount)\n  .slice(0, 20);\n\nmetrics.topBranches = Object.entries(metrics.byBranch)\n  .map(([name, data]) => ({\n    branchName: name,\n    ...data,\n    projects: Array.from(data.projects),\n    netLines: data.linesAdded - data.linesDeleted\n  }))\n  .sort((a, b) => b.commitCount - a.commitCount)\n  .slice(0, 20);\n\n// Preparar datos para guardar en PostgreSQL\nconst outputForDB = [];\n\nfor (const [authorKey, authorData] of Object.entries(metrics.byAuthor)) {\n  for (const branch of authorData.branches) {\n    outputForDB.push({\n      json: {\n        collection_date: new Date().toISOString().split('T')[0],\n        author_name: authorData.name,\n        author_email: authorData.email,\n        branch_name: branch,\n        project_count: authorData.projects.size,\n        commit_count: authorData.commitCount,\n        lines_added: authorData.linesAdded,\n        lines_deleted: authorData.linesDeleted,\n        files_changed: authorData.filesChanged,\n        branches_list: JSON.stringify(Array.from(authorData.branches)),\n        projects_list: JSON.stringify(Array.from(authorData.projects)),\n        metrics_summary: JSON.stringify({\n          topAuthors: metrics.topAuthors,\n          topBranches: metrics.topBranches,\n          byHour: metrics.byHour,\n          byDate: metrics.byDate\n        })\n      }\n    });\n  }\n}\n\nreturn outputForDB;"
+      },
+      "id": "process-metrics",
+      "name": "Process Metrics & Create Rankings",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "gitlab_group_metrics",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData",
+        "columnToMatchOn": "",
+        "options": {}
+      },
+      "id": "postgres-insert",
+      "name": "Save Group Metrics to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1700, 300],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1440
+            }
+          ]
+        }
+      },
+      "id": "scheduler",
+      "name": "Daily Scheduler",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [100, 200]
+    }
+  ],
+  "connections": {
+    "scheduler": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filter": {
+      "main": [
+        [
+          {
+            "node": "prepare-projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-projects": {
+      "main": [
+        [
+          {
+            "node": "http-get-branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "http-get-branches": {
+      "main": [
+        [
+          {
+            "node": "prepare-commits-per-branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-commits-per-branch": {
+      "main": [
+        [
+          {
+            "node": "http-request-commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "http-request-commits": {
+      "main": [
+        [
+          {
+            "node": "process-metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-metrics": {
+      "main": [
+        [
+          {
+            "node": "postgres-insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "triggerCount": 1
+}

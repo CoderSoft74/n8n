@@ -1,0 +1,23 @@
+# Environment files (contain secrets)
+.env
+!.env.example
+
+# n8n data volumes
+n8ndata/
+postgresdata/
+*/pgdata/
+*/grafana-data/
+*/n8n_data/
+
+# Credential files
+credenciales_n8n.json
+!credenciales_n8n.json.example
+
+# n8n internal files
+database.sqlite*
+n8nEventLog*
+config
+crash.journal
+
+# Docker
+.docker/

@@ -1,0 +1,118 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "gitlab-team-metrics",
+    "title": "GitLab Team Metrics Dashboard",
+    "tags": ["gitlab", "development", "team", "metrics"],
+    "style": "dark",
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Commits por Desarrollador (Últimos 7 días)",
+        "type": "barchart",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [{
+          "rawSql": "SELECT u.name as developer, DATE(c.created_at_gitlab) as time, COUNT(*) as commits FROM commits c JOIN users u ON u.gitlab_id = (SELECT gitlab_id FROM users WHERE email = c.author_email LIMIT 1) WHERE $__timeFilter(c.created_at_gitlab) GROUP BY u.name, DATE(c.created_at_gitlab) ORDER BY time",
+          "format": "time_series"
+        }],
+        "options": {
+          "mode": "stacked",
+          "legend": {"displayMode": "table", "placement": "bottom"}
+        }
+      },
+      {
+        "id": 2,
+        "title": "Horas Pico de Actividad",
+        "type": "heatmap",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [{
+          "rawSql": "SELECT u.name as developer, EXTRACT(HOUR FROM hm.date + (hm.hour || ' hours')::INTERVAL) as time, SUM(hm.commit_count) as value FROM hourly_metrics hm JOIN users u ON u.user_id = hm.user_id WHERE $__timeFilter(hm.date) GROUP BY u.name, hm.date, hm.hour ORDER BY hm.date, hm.hour",
+          "format": "time_series"
+        }]
+      },
+      {
+        "id": 3,
+        "title": "Proyectos Activos por Desarrollador",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [{
+          "rawSql": "SELECT u.name as developer, COUNT(DISTINCT p.name) as active_projects, STRING_AGG(DISTINCT p.name, ', ') as projects FROM active_projects_snapshot aps JOIN users u ON u.user_id = aps.user_id JOIN projects p ON p.project_id = aps.project_id WHERE aps.date = CURRENT_DATE GROUP BY u.name ORDER BY active_projects DESC",
+          "format": "table"
+        }]
+      },
+      {
+        "id": 4,
+        "title": "Líneas de Código por Desarrollador",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+        "targets": [{
+          "rawSql": "SELECT u.name as developer, SUM(c.stats_additions) as additions FROM commits c JOIN users u ON u.gitlab_id = (SELECT gitlab_id FROM users WHERE email = c.author_email LIMIT 1) WHERE $__timeFilter(c.created_at_gitlab) GROUP BY u.name",
+          "format": "table"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {"steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 100},
+              {"color": "green", "value": 500}
+            ]}
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Días Más Productivos",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [{
+          "rawSql": "SELECT dm.date as time, u.name as developer, dm.commit_count FROM daily_metrics dm JOIN users u ON u.user_id = dm.user_id WHERE $__timeFilter(dm.date) ORDER BY dm.date",
+          "format": "time_series"
+        }],
+        "options": {
+          "legend": {"displayMode": "table", "placement": "bottom"}
+        }
+      },
+      {
+        "id": 6,
+        "title": "Trend de Actividad Semanal",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "targets": [{
+          "rawSql": "SELECT DATE_TRUNC('week', dm.date) as time, u.name as developer, SUM(dm.commit_count) as commits FROM daily_metrics dm JOIN users u ON u.user_id = dm.user_id WHERE $__timeFilter(dm.date) GROUP BY DATE_TRUNC('week', dm.date), u.name ORDER BY time",
+          "format": "time_series"
+        }]
+      },
+      {
+        "id": 7,
+        "title": "Distribución Horaria Promedio",
+        "type": "barchart",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [{
+          "rawSql": "SELECT hm.hour as hour, u.name as developer, AVG(hm.commit_count) as avg_commits FROM hourly_metrics hm JOIN users u ON u.user_id = hm.user_id WHERE hm.date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY hm.hour, u.name ORDER BY hm.hour",
+          "format": "table"
+        }]
+      },
+      {
+        "id": 8,
+        "title": "Resumen del Equipo",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+        "targets": [{
+          "rawSql": "SELECT 'Total Commits' as metric, COUNT(*) as value FROM commits WHERE created_at_gitlab >= CURRENT_DATE - INTERVAL '7 days' UNION ALL SELECT 'Desarrolladores Activos', COUNT(DISTINCT author_email) FROM commits WHERE created_at_gitlab >= CURRENT_DATE - INTERVAL '7 days' UNION ALL SELECT 'Proyectos Activos', COUNT(DISTINCT project_id) FROM commits WHERE created_at_gitlab >= CURRENT_DATE - INTERVAL '7 days'",
+          "format": "table"
+        }]
+      }
+    ],
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    },
+    "refresh": "5m",
+    "schemaVersion": 35,
+    "version": 1,
+    "links": []
+  },
+  "overwrite": true
+}

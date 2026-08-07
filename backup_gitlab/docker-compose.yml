@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  n8n:
+    image: docker.n8nio_n8n_latest:2.4
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Configuración básica de n8n
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - N8N_LOG_LEVEL=info
+
+      # Zona horaria (Toronto)
+      - GENERIC_TIMEZONE=America/Havana
+
+      # Credenciales / URLs para tu workflow GitLab CI/CD
+      - GITLAB_URL=${GITLAB_URL:-http://172.24.7.110}
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - GITLAB_AUTO_MERGE_TOKEN=${GITLAB_AUTO_MERGE_TOKEN}
+
+      # SonarQube
+      - SONAR_HOST_URL=${SONAR_HOST_URL:-http://172.24.7.110}
+      - SONAR_TOKEN=${SONAR_TOKEN}
+
+      # Kubernetes (kubeconfig en base64)
+      # - KUBE_STAGING_CONFIG=${KUBE_STAGING_CONFIG}
+      # - KUBE_PROD_CONFIG=${KUBE_PROD_CONFIG}
+
+      # Email resumen CI/CD
+      - CI_SUMMARY_EMAIL=${CI_SUMMARY_EMAIL:-jovanni.segura@datys.cu}
+
+      # Opcional: desactivar registro anónimo / banners
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+
+    volumes:
+      # Config de n8n (workflows, credenciales, etc.)
+      - ./n8n_data:/home/node/.n8n
+
+    # Opcional: si usas un proxy inverso tipo Nginx/Traefik, ponlo aquí
+    # networks:
+    #   - proxy
+# volumes:
+#   n8n_data:
+# networks:
+#   proxy:
+#     external: true

@@ -1,0 +1,269 @@
+{
+  "name": "GitLab Daily Metrics Collector",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://gitlab.com/api/v4/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Private-Token",
+              "value": "={{$credentials.gitlabToken}}"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "properties": {
+              "limitParameter": "per_page",
+              "pageParameter": "page",
+              "pageSize": 100,
+              "maxResults": 500
+            }
+          }
+        }
+      },
+      "id": "start",
+      "name": "Get All Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [300, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json['archived']}}",
+              "operation": "false"
+            }
+          ]
+        }
+      },
+      "id": "filter",
+      "name": "Filter Active Repos",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Para cada repositorio, obtener commits de las últimas 24 horas\nconst now = new Date();\nconst yesterday = new Date(now);\nyesterday.setDate(yesterday.getDate() - 1);\n\nconst formatDate = (date) => date.toISOString().split('T')[0];\n\nconst repos = items[0].json;\nconst results = [];\n\nfor (const repo of repos) {\n  const repoId = repo.id;\n  const repoName = repo.name;\n  \n  // Obtener commits del repositorio desde ayer\n  const commitsUrl = `https://gitlab.com/api/v4/projects/${repoId}/repository/commits?since=${yesterday.toISOString()}&until=${now.toISOString()}`;\n  \n  results.push({\n    repoId,\n    repoName,\n    repoUrl: repo.web_url,\n    commitsUrl\n  });\n}\n\nreturn results.map(item => ({\n  json: item\n}));"
+      },
+      "id": "prepare-repos",
+      "name": "Prepare Repo URLs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "options": {
+          "simple": false
+        }
+      },
+      "id": "http-request-commits",
+      "name": "Get Daily Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Procesar commits por autor\nconst results = {};\n\nfor (const item of items) {\n  const repoData = item.json;\n  const commits = repoData.commits || [];\n  \n  for (const commit of commits) {\n    const authorName = commit.author_name || 'Unknown';\n    const authorEmail = commit.author_email || '';\n    const commitDate = commit.committed_date.split('T')[0];\n    \n    if (!results[authorEmail]) {\n      results[authorEmail] = {\n        author_name: authorName,\n        author_email: authorEmail,\n        commit_dates: {},\n        total_commits: 0,\n        total_lines_added: 0,\n        total_lines_deleted: 0,\n        total_files_changed: 0\n      };\n    }\n    \n    const authorData = results[authorEmail];\n    \n    // Contar commits por fecha\n    if (!authorData.commit_dates[commitDate]) {\n      authorData.commit_dates[commitDate] = 0;\n    }\n    authorData.commit_dates[commitDate]++;\n    authorData.total_commits++;\n    \n    // Obtener estadísticas del commit\n    const stats = commit.stats || {};\n    authorData.total_lines_added += stats.additions || 0;\n    authorData.total_lines_deleted += stats.deletions || 0;\n    authorData.total_files_changed += stats.total || 0;\n  }\n}\n\n// Convertir a array\nconst output = Object.values(results).map(data => ({\n  json: {\n    ...data,\n    commit_dates: JSON.stringify(data.commit_dates)\n  }\n}));\n\nreturn output;"
+      },
+      "id": "process-commits",
+      "name": "Process Commits by Author",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "daily_commits",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData",
+        "columnToMatchOn": "",
+        "options": {}
+      },
+      "id": "postgres-insert",
+      "name": "Save to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1300, 300],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Preparar datos para logs\nconst today = new Date().toISOString().split('T')[0];\nconst totalRecords = items.length;\n\nreturn [{\n  json: {\n    workflow_name: 'GitLab Daily Metrics',\n    execution_date: new Date().toISOString(),\n    status: 'completed',\n    records_processed: totalRecords,\n    duration_ms: Date.now() - workflow_start_time\n  }\n}];"
+      },
+      "id": "prepare-logs",
+      "name": "Prepare Workflow Logs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1300, 500]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "workflow_logs",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData",
+        "columnToMatchOn": "",
+        "options": {}
+      },
+      "id": "save-logs",
+      "name": "Save Workflow Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1500, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Variable global para tracking\nconst workflow_start_time = Date.now();"
+      },
+      "id": "init-timer",
+      "name": "Initialize Timer",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [100, 400]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1440
+            }
+          ]
+        }
+      },
+      "id": "scheduler",
+      "name": "Daily Scheduler",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [100, 200]
+    }
+  ],
+  "connections": {
+    "scheduler": {
+      "main": [
+        [
+          {
+            "node": "init-timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "init-timer": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filter": {
+      "main": [
+        [
+          {
+            "node": "prepare-repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-repos": {
+      "main": [
+        [
+          {
+            "node": "http-request-commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "http-request-commits": {
+      "main": [
+        [
+          {
+            "node": "process-commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-commits": {
+      "main": [
+        [
+          {
+            "node": "postgres-insert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "prepare-logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-logs": {
+      "main": [
+        [
+          {
+            "node": "save-logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "triggerCount": 1
+}

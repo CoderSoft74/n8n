@@ -1,0 +1,263 @@
+{
+  "name": "GitLab Metrics Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "1",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{$credentials?.gitlabToken}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "2",
+      "name": "Get GitLab Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "each",
+        "fieldsToSplit": "json",
+        "fieldToSplitOut": "json",
+        "options": {}
+      },
+      "id": "3",
+      "name": "Split Projects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Configurar fechas\nconst endDate = new Date();\nconst startDate = new Date();\nstartDate.setDate(startDate.getDate() - 7); // Últimos 7 días\n\nconst formatDate = (date) => {\n  return date.toISOString().split('T')[0];\n};\n\n// Preparar items para cada proyecto\nconst items = [];\nfor (const project of $input.all()) {\n  items.push({\n    json: {\n      projectId: project.json.id,\n      projectName: project.json.name,\n      startDate: formatDate(startDate),\n      endDate: formatDate(endDate),\n      defaultBranch: project.json.default_branch || 'main'\n    }\n  });\n}\n\nreturn items;"
+      },
+      "id": "4",
+      "name": "Prepare Project Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects/{{$json.projectId}}/repository/commits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{$credentials?.gitlabToken}}"
+            }
+          ]
+        },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{$json.startDate}}T00:00:00Z"
+            },
+            {
+              "name": "until",
+              "value": "={{$json.endDate}}T23:59:59Z"
+            },
+            {
+              "name": "per_page",
+              "value": "100"
+            },
+            {
+              "name": "all",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "5",
+      "name": "Get Project Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const commits = $input.all();\nconst enrichedCommits = [];\n\nfor (const commitItem of commits) {\n  const commit = commitItem.json;\n  \n  // Analizar calidad del mensaje\n  const messageQuality = commit.message && commit.message.length >= 15;\n  \n  // Detectar reversiones\n  const isRevert = commit.message && commit.message.toLowerCase().includes('revert');\n  \n  // Detectar referencias a issues\n  const hasIssueRef = commit.message && /#[0-9]+/.test(commit.message);\n  \n  // Detectar referencias a MR\n  const hasMrRef = commit.message && /![0-9]+/.test(commit.message);\n  \n  // Determinar si es fuera de horario laboral (9-18)\n  const commitDate = new Date(commit.committed_date);\n  const hour = commitDate.getHours();\n  const day = commitDate.getDay(); // 0 = Domingo, 6 = Sábado\n  \n  const isWorkHour = hour >= 9 && hour < 18 && day >= 1 && day <= 5;\n  const isWeekend = day === 0 || day === 6;\n  \n  enrichedCommits.push({\n    json: {\n      ...commit,\n      projectId: commitItem.json.projectId,\n      projectName: commitItem.json.projectName,\n      message_quality: messageQuality,\n      is_revert: isRevert,\n      has_issue_ref: hasIssueRef,\n      has_mr_ref: hasMrRef,\n      is_work_hour: isWorkHour,\n      is_weekend: isWeekend,\n      hour: hour,\n      day_of_week: day,\n      message_length: commit.message ? commit.message.length : 0\n    }\n  });\n}\n\nreturn enrichedCommits;"
+      },
+      "id": "6",
+      "name": "Enrich Commit Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst metrics = [];\n\n// Agrupar por proyecto y usuario\nconst groupedData = {};\n\nfor (const item of items) {\n  const commit = item.json;\n  const key = `${commit.projectId}_${commit.author_id || commit.author_email}`;\n  \n  if (!groupedData[key]) {\n    groupedData[key] = {\n      projectId: commit.projectId,\n      projectName: commit.projectName,\n      authorId: commit.author_id,\n      authorName: commit.author_name,\n      authorEmail: commit.author_email,\n      commits: [],\n      totalAdditions: 0,\n      totalDeletions: 0,\n      totalFiles: 0,\n      commitsOutsideHours: 0,\n      commitsWeekend: 0,\n      qualityMessages: 0,\n      issueRefs: 0,\n      mrRefs: 0,\n      reverts: 0\n    };\n  }\n  \n  const group = groupedData[key];\n  group.commits.push(commit);\n  \n  if (commit.stats) {\n    group.totalAdditions += commit.stats.additions || 0;\n    group.totalDeletions += commit.stats.deletions || 0;\n    group.totalFiles += commit.stats.total || 0;\n  }\n  \n  if (!commit.is_work_hour) group.commitsOutsideHours++;\n  if (commit.is_weekend) group.commitsWeekend++;\n  if (commit.message_quality) group.qualityMessages++;\n  if (commit.has_issue_ref) group.issueRefs++;\n  if (commit.has_mr_ref) group.mrRefs++;\n  if (commit.is_revert) group.reverts++;\n}\n\n// Calcular métricas\nfor (const key in groupedData) {\n  const g = groupedData[key];\n  const totalCommits = g.commits.length;\n  \n  if (totalCommits > 0) {\n    metrics.push({\n      json: {\n        project_id: g.projectId,\n        project_name: g.projectName,\n        user_id: g.authorId,\n        user_name: g.authorName,\n        user_email: g.authorEmail,\n        metric_date: new Date().toISOString().split('T')[0],\n        commits_count: totalCommits,\n        total_additions: g.totalAdditions,\n        total_deletions: g.totalDeletions,\n        total_files_changed: g.totalFiles,\n        avg_commit_size: Number(((g.totalAdditions + g.totalDeletions) / totalCommits).toFixed(2)),\n        commits_outside_work_hours: g.commitsOutsideHours,\n        commits_weekend: g.commitsWeekend,\n        commits_with_quality_message: g.qualityMessages,\n        commits_with_issue_ref: g.issueRefs,\n        commits_with_mr_ref: g.mrRefs,\n        revert_commits: g.reverts,\n        quality_percentage: Number(((g.qualityMessages / totalCommits) * 100).toFixed(2)),\n        issue_ref_percentage: Number(((g.issueRefs / totalCommits) * 100).toFixed(2)),\n        revert_rate: Number(((g.reverts / totalCommits) * 100).toFixed(2)),\n        outside_hours_percentage: Number(((g.commitsOutsideHours / totalCommits) * 100).toFixed(2))\n      }\n    });\n  }\n}\n\nreturn metrics;"
+      },
+      "id": "7",
+      "name": "Calculate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "public",
+        "table": "daily_metrics",
+        "columns": "project_id,user_id,metric_date,commits_count,total_additions,total_deletions,total_files_changed,avg_commit_size,commits_outside_work_hours,commits_weekend,commits_with_quality_message,commits_with_issue_ref,commits_with_mr_ref,revert_commits",
+        "dataMode": "autoMapInputData",
+        "upsert": true,
+        "upsertConstraint": "project_id, user_id, metric_date"
+      },
+      "id": "8",
+      "name": "Save to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.revert_rate}}",
+              "operation": "larger",
+              "value2": 5
+            }
+          ]
+        }
+      },
+      "id": "9",
+      "name": "Check Revert Rate Alert",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst alerts = [];\n\nfor (const item of items) {\n  if (item.json.revert_rate > 5) {\n    alerts.push({\n      json: {\n        project_id: item.json.project_id,\n        user_id: item.json.user_id,\n        metric_name: 'revert_rate',\n        metric_value: item.json.revert_rate,\n        threshold_value: 5,\n        severity: 'critical',\n        message: `Alta tasa de reversiones: ${item.json.revert_rate.toFixed(2)}% en el proyecto ${item.json.project_name} - Usuario: ${item.json.user_name}`\n      }\n    });\n  }\n}\n\nreturn alerts;"
+      },
+      "id": "10",
+      "name": "Create Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "alerts",
+        "columns": "project_id,user_id,metric_name,metric_value,threshold_value,severity,message",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "11",
+      "name": "Save Alert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [2250, 400],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.quality_percentage}}",
+              "operation": "smaller",
+              "value2": 80
+            }
+          ]
+        }
+      },
+      "id": "12",
+      "name": "Check Quality Alert",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1850, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst alerts = [];\n\nfor (const item of items) {\n  if (item.json.quality_percentage < 80) {\n    alerts.push({\n      json: {\n        project_id: item.json.project_id,\n        user_id: item.json.user_id,\n        metric_name: 'message_quality',\n        metric_value: item.json.quality_percentage,\n        threshold_value: 80,\n        severity: 'warning',\n        message: `Baja calidad de mensajes: ${item.json.quality_percentage.toFixed(2)}% en el proyecto ${item.json.project_name} - Usuario: ${item.json.user_name}`\n      }\n    });\n  }\n}\n\nreturn alerts;"
+      },
+      "id": "13",
+      "name": "Create Quality Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 600]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "alerts",
+        "columns": "project_id,user_id,metric_name,metric_value,threshold_value,severity,message",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "14",
+      "name": "Save Quality Alert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [2250, 600],
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Metrics"
+        }
+      }
+    }
+  ]
+}

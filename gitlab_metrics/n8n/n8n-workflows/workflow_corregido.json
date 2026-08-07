@@ -1,0 +1,443 @@
+{
+  "name": "GitLab Metrics Collector (Complete Version)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "hour": 2,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "id": "scheduler",
+      "name": "Daily at 2:00 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 2,
+      "position": [100, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/groups/26/projects?include_subgroups=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "properties": {
+              "limitParameter": "per_page",
+              "pageParameter": "page",
+              "pageSize": 100
+            }
+          }
+        }
+      },
+      "id": "get-projects",
+      "name": "Get All Projects (Group 26 + Subgroups)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [300, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Guardar registro de ejecución\nconst executionData = {\n  json: {\n    execution_date: new Date().toISOString().split('T')[0],\n    start_time: new Date().toISOString(),\n    total_projects_scanned: items[0].json.length,\n    status: 'running'\n  }\n};\n\nreturn [executionData, ...items];"
+      },
+      "id": "log-execution-start",
+      "name": "Log Execution Start",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "execution_log",
+        "returnFields": "execution_id",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-execution-log",
+      "name": "Save Execution Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [700, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Procesar cada proyecto\nconst executionId = items[0].json.execution_id;\nconst projects = items[1].json;\nconst results = [];\nconst yesterday = new Date();\nyesterday.setDate(yesterday.getDate() - 1);\n\nfor (const project of projects) {\n  if (project.archived) continue;\n  \n  // 1. Guardar proyecto en BD\n  results.push({\n    json: {\n      execution_id: executionId,\n      gitlab_project_id: project.id,\n      project_name: project.name,\n      path_with_namespace: project.path_with_namespace,\n      web_url: project.web_url,\n      last_activity_at: project.last_activity_at,\n      created_at: project.created_at,\n      metric_date: new Date().toISOString().split('T')[0]\n    }\n  });\n  \n  // 2. Obtener commits del proyecto (últimas 24h)\n  const commitsUrl = `http://172.24.7.110/api/v4/projects/${project.id}/repository/commits?since=${yesterday.toISOString()}&per_page=100`;\n  \n  // 3. Obtener ramas\n  const branchesUrl = `http://172.24.7.110/api/v4/projects/${project.id}/repository/branches`;\n  \n  results.push({\n    json: {\n      project_id: project.id,\n      project_name: project.name,\n      commits_url: commitsUrl,\n      branches_url: branchesUrl,\n      execution_id: executionId\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "process-projects",
+      "name": "Process Projects & Prepare URLs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "gitlab_projects",
+        "returnFields": "project_id",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData",
+        "options": {
+          "conflictResolution": {
+            "column": "gitlab_project_id",
+            "strategy": "update"
+          }
+        }
+      },
+      "id": "save-projects",
+      "name": "Save Projects to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1100, 100],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operations": [
+          {
+            "fields": "json.commits_url",
+            "fieldSeparator": ".",
+            "newField": "url",
+            "include": "allFields"
+          }
+        ]
+      },
+      "id": "set-commits-url",
+      "name": "Extract Commits URL",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "operations": [
+          {
+            "fields": "json.branches_url",
+            "fieldSeparator": ".",
+            "newField": "url",
+            "include": "allFields"
+          }
+        ]
+      },
+      "id": "set-branches-url",
+      "name": "Extract Branches URL",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "paginate": {
+            "type": "query",
+            "properties": {
+              "limitParameter": "per_page",
+              "pageParameter": "page",
+              "pageSize": 100
+            }
+          }
+        }
+      },
+      "id": "get-commits",
+      "name": "Get Commits for Each Project",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        }
+      },
+      "id": "get-branches",
+      "name": "Get Branches for Each Project",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Procesar commits y calcular métricas\nconst executionId = items[0].json.execution_id;\nconst projectId = items[0].json.project_id;\nconst projectName = items[0].json.project_name;\nconst commits = items[1].json;\nconst branches = items[2].json;\n\nconst metrics = {\n  byAuthor: {},\n  byBranch: {},\n  byHour: {},\n  totalLines: { added: 0, deleted: 0 },\n  branchCommits: {}\n};\n\n// Inicializar contadores por rama\nfor (const branch of branches) {\n  metrics.branchCommits[branch.name] = 0;\n}\n\n// Procesar cada commit\nfor (const commit of commits) {\n  const authorName = commit.author_name || 'Unknown';\n  const authorEmail = commit.author_email || 'unknown';\n  const commitDate = new Date(commit.committed_date || commit.created_at);\n  const authorKey = `${authorName}<${authorEmail}>`;\n  const hour = commitDate.getHours();\n  const weekDay = commitDate.getDay();\n  const branchName = commit.ref_name || 'main';\n  \n  // Métricas por autor\n  if (!metrics.byAuthor[authorKey]) {\n    metrics.byAuthor[authorKey] = {\n      author_name: authorName,\n      author_email: authorEmail,\n      commit_count: 0\n    };\n  }\n  metrics.byAuthor[authorKey].commit_count++;\n  \n  // Métricas por rama\n  metrics.branchCommits[branchName] = (metrics.branchCommits[branchName] || 0) + 1;\n  \n  // Métricas por hora\n  if (!metrics.byHour[hour]) {\n    metrics.byHour[hour] = 0;\n  }\n  metrics.byHour[hour]++;\n  \n  // Líneas de código (si están disponibles)\n  if (commit.stats) {\n    metrics.totalLines.added += commit.stats.additions || 0;\n    metrics.totalLines.deleted += commit.stats.deletions || 0;\n  }\n}\n\n// Preparar datos para PostgreSQL\nconst dbOutput = [];\nconst today = new Date().toISOString().split('T')[0];\n\n// 1. Commits por autor\nfor (const [authorKey, authorData] of Object.entries(metrics.byAuthor)) {\n  dbOutput.push({\n    json: {\n      execution_id: executionId,\n      project_id: projectId,\n      author_name: authorData.author_name,\n      author_email: authorData.author_email,\n      commit_count: authorData.commit_count,\n      metric_date: today\n    }\n  });\n}\n\n// 2. Commits por rama\nfor (const [branchName, commitCount] of Object.entries(metrics.branchCommits)) {\n  if (commitCount > 0) {\n    dbOutput.push({\n      json: {\n        execution_id: executionId,\n        project_id: projectId,\n        branch_name: branchName,\n        commit_count: commitCount,\n        metric_date: today\n      }\n    });\n  }\n}\n\n// 3. Líneas de código\nif (metrics.totalLines.added > 0 || metrics.totalLines.deleted > 0) {\n  dbOutput.push({\n    json: {\n      execution_id: executionId,\n      project_id: projectId,\n      total_lines: metrics.totalLines.added + metrics.totalLines.deleted,\n      added_lines: metrics.totalLines.added,\n      deleted_lines: metrics.totalLines.deleted,\n      metric_date: today\n    }\n  });\n}\n\n// 4. Frecuencia por hora\nfor (const [hour, count] of Object.entries(metrics.byHour)) {\n  dbOutput.push({\n    json: {\n      execution_id: executionId,\n      project_id: projectId,\n      week_day: new Date().getDay(),\n      hour_of_day: parseInt(hour),\n      commit_count: count,\n      metric_date: today\n    }\n  });\n}\n\nreturn dbOutput;"
+      },
+      "id": "calculate-metrics",
+      "name": "Calculate All Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "commit_metrics_author",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-author-metrics",
+      "name": "Save Author Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1700, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "commit_metrics_branch",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-branch-metrics",
+      "name": "Save Branch Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1700, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "code_line_metrics",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-line-metrics",
+      "name": "Save Code Line Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1700, 400],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": "public",
+        "table": "commit_frequency",
+        "returnFields": "*",
+        "additionalFields": {},
+        "mode": "independently",
+        "dataMode": "autoMapInputData"
+      },
+      "id": "save-frequency-metrics",
+      "name": "Save Frequency Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1700, 500],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL Connection"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily at 2:00 AM": {
+      "main": [
+        [
+          {
+            "node": "Get All Projects (Group 26 + Subgroups)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Projects (Group 26 + Subgroups)": {
+      "main": [
+        [
+          {
+            "node": "Log Execution Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Execution Start": {
+      "main": [
+        [
+          {
+            "node": "Save Execution Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Execution Log": {
+      "main": [
+        [
+          {
+            "node": "Process Projects & Prepare URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Projects & Prepare URLs": {
+      "main": [
+        [
+          {
+            "node": "Save Projects to DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Commits URL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Branches URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Commits URL": {
+      "main": [
+        [
+          {
+            "node": "Get Commits for Each Project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Branches URL": {
+      "main": [
+        [
+          {
+            "node": "Get Branches for Each Project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commits for Each Project": {
+      "main": [
+        [
+          {
+            "node": "Calculate All Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Branches for Each Project": {
+      "main": [
+        [
+          {
+            "node": "Calculate All Metrics",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Calculate All Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Author Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Branch Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Code Line Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Frequency Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

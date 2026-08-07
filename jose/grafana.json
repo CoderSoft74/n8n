@@ -1,0 +1,73 @@
+{
+  "title": "GitLab Metrics Dashboard",
+  "tags": ["gitlab", "metrics", "development"],
+  "timezone": "browser",
+  "schemaVersion": 27,
+  "version": 1,
+  "refresh": "5m",
+  "panels": [
+    {
+      "title": "Resumen General",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"format": "table", "rawSql": "SELECT SUM(commits_count) as value FROM daily_metrics WHERE metric_date >= NOW() - INTERVAL '30 days'"}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      }
+    },
+    {
+      "title": "Calidad de Mensajes",
+      "type": "gauge",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT ROUND(SUM(CASE WHEN message_quality THEN 1 ELSE 0 END)::numeric / COUNT(*) * 100, 2) as value FROM commit_metrics WHERE commit_date >= NOW() - INTERVAL '7 days'"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "green", "value": 90}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Top Contribuyentes",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 4},
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT u.name as usuario, COUNT(c.id) as commits, SUM(c.additions) as agregadas, SUM(c.deletions) as eliminadas, ROUND(COUNT(c.id)::numeric / NULLIF(COUNT(DISTINCT DATE(c.commit_date)), 0), 2) as commits_por_dia FROM commit_metrics c JOIN users u ON c.user_id = u.id WHERE c.commit_date >= NOW() - INTERVAL '30 days' AND u.is_bot = false GROUP BY u.id, u.name ORDER BY commits DESC LIMIT 10"
+      }]
+    },
+    {
+      "title": "Evolución de Commits",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{
+        "format": "time_series",
+        "rawSql": "SELECT metric_date as time, SUM(commits_count) as value FROM daily_metrics WHERE metric_date >= NOW() - INTERVAL '90 days' GROUP BY metric_date ORDER BY metric_date"
+      }]
+    },
+    {
+      "title": "Alertas Activas",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "targets": [{
+        "format": "table",
+        "rawSql": "SELECT TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI') as fecha, p.name as proyecto, u.name as usuario, metric_name as metrica, ROUND(metric_value, 2) as valor, severity as severidad FROM alerts a LEFT JOIN projects p ON a.project_id = p.id LEFT JOIN users u ON a.user_id = u.id WHERE a.created_at >= NOW() - INTERVAL '7 days' AND a.is_resolved = false ORDER BY a.created_at DESC"
+      }]
+    }
+  ]
+}

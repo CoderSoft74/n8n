@@ -1,0 +1,73 @@
+{
+  "title": "Productividad GitLab por Desarrollador",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Métricas diarias por usuario",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "datasource": {
+            "type": "postgres",
+            "uid": "GitMetrics"
+          },
+          "rawSql": "SELECT \n  d.metric_date,\n  p.name AS project_name,\n  u.username,\n  u.name AS full_name,\n  d.commits_count,\n  d.merge_requests_opened,\n  d.merge_requests_merged,\n  d.estimated_hours\nFROM gitmetrics.daily_user_metrics d\nJOIN gitmetrics.projects p ON d.project_id = p.id\nJOIN gitmetrics.users u ON d.user_id = u.id\nWHERE $__timeFilter(d.metric_date)\nORDER BY d.metric_date DESC, project_name, username;",
+          "timeColumn": "metric_date",
+          "timeColumnType": "timestamp",
+          "interval": "1d"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Commits por usuario",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "postgres",
+            "uid": "GitMetrics"
+          },
+          "format": "time_series",
+          "rawSql": "SELECT \n  d.metric_date AS time,\n  u.username AS metric,\n  d.commits_count AS value\nFROM gitmetrics.daily_user_metrics d\nJOIN gitmetrics.users u ON d.user_id = u.id\nWHERE $__timeFilter(d.metric_date);",
+          "timeColumn": "time",
+          "timeColumnType": "timestamp"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "Horas estimadas hoy por usuario",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "postgres",
+            "uid": "GitMetrics"
+          },
+          "format": "table",
+          "rawSql": "SELECT \n  u.username,\n  SUM(d.estimated_hours) AS hours\nFROM gitmetrics.daily_user_metrics d\nJOIN gitmetrics.users u ON d.user_id = u.id\nWHERE d.metric_date = CURRENT_DATE\nGROUP BY u.username\nORDER BY hours DESC;"
+        }
+      ]
+    }
+  ]
+}

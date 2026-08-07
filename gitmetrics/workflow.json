@@ -1,0 +1,276 @@
+{
+  "name": "GitLab Productividad Desarrolladores",
+  "nodes": [
+    {
+      "id": "Cron_Trigger",
+      "name": "Cada 5 minutos",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [300, 300],
+      "parameters": {
+        "triggerTimes": [
+          {
+            "mode": "everyX",
+            "unit": "minutes",
+            "value": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "Get_Projects",
+      "name": "Get Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [600, 200],
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects?membership=true&simple=true&per_page=100",
+        "method": "GET",
+        "authentication": "headerAuth",
+        "options": {
+          "splitIntoItems": true
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__REPLACE__GITLAB_HTTP_HEADER_AUTH_ID__",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "id": "Upsert_Projects",
+      "name": "Upsert Projects",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [900, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitmetrics.projects (gitlab_id, name, path_with_namespace, web_url, created_at, last_activity_at)\nVALUES ({{ $json.id }}, {{ $json.name }}, {{ $json.path_with_namespace }}, {{ $json.web_url }}, {{ $json.created_at }}, {{ $json.last_activity_at }})\nON CONFLICT (gitlab_id) DO UPDATE SET\n  name = EXCLUDED.name,\n  path_with_namespace = EXCLUDED.path_with_namespace,\n  web_url = EXCLUDED.web_url,\n  created_at = EXCLUDED.created_at,\n  last_activity_at = EXCLUDED.last_activity_at\nRETURNING id AS project_db_id;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "__REPLACE__POSTGRES_CREDENTIAL_ID__",
+          "name": "Postgres GitMetrics"
+        }
+      }
+    },
+    {
+      "id": "Get_Project_Members",
+      "name": "Get Project Members",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1200, 200],
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects/{{ $json.id }}/members/all?per_page=100",
+        "method": "GET",
+        "authentication": "headerAuth",
+        "options": {
+          "splitIntoItems": true
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__REPLACE__GITLAB_HTTP_HEADER_AUTH_ID__",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "id": "Upsert_Users_And_Members",
+      "name": "Upsert Users & Members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1500, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH upsert_user AS (\n  INSERT INTO gitmetrics.users (gitlab_id, username, name, state, web_url)\n  VALUES ({{ $json.id }}, {{ $json.username }}, {{ $json.name }}, {{ $json.state }}, {{ $json.web_url }})\n  ON CONFLICT (gitlab_id) DO UPDATE SET\n    username = EXCLUDED.username,\n    name = EXCLUDED.name,\n    state = EXCLUDED.state,\n    web_url = EXCLUDED.web_url\n  RETURNING id AS user_db_id\n)\nINSERT INTO gitmetrics.project_members (project_id, user_id, access_level, created_at)\nVALUES (\n  (SELECT p.id FROM gitmetrics.projects p WHERE p.gitlab_id = {{ $node[\"Get_Projects\"].json[\"id\"] }}),\n  (SELECT user_db_id FROM upsert_user),\n  NOW(),\n  {{ $json.access_level }}\n)\nON CONFLICT (project_id, user_id) DO UPDATE SET\n  access_level = EXCLUDED.access_level;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "__REPLACE__POSTGRES_CREDENTIAL_ID__",
+          "name": "Postgres GitMetrics"
+        }
+      }
+    },
+    {
+      "id": "Get_Commits",
+      "name": "Get Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [600, 450],
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects/{{ $json.id }}/repository/commits?per_page=100",
+        "method": "GET",
+        "authentication": "headerAuth",
+        "options": {
+          "splitIntoItems": true
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__REPLACE__GITLAB_HTTP_HEADER_AUTH_ID__",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "id": "Upsert_Commits",
+      "name": "Upsert Commits",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [900, 450],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH u AS (\n  INSERT INTO gitmetrics.users (gitlab_id, username, name)\n  VALUES (NULL, NULL, {{ $json.author_name }})\n  ON CONFLICT (gitlab_id) DO NOTHING\n  RETURNING id\n),\nproject_row AS (\n  SELECT id AS project_db_id FROM gitmetrics.projects WHERE gitlab_id = {{ $node[\"Get_Projects\"].json[\"id\"] }}\n)\nINSERT INTO gitmetrics.commits (gitlab_id, project_id, author_name, author_email, title, message, committed_date)\nVALUES (\n  {{ $json.id }},\n  (SELECT project_db_id FROM project_row),\n  {{ $json.author_name }},\n  {{ $json.author_email }},\n  {{ $json.title }},\n  {{ $json.message }},\n  {{ $json.committed_date }}\n)\nON CONFLICT (gitlab_id, project_id) DO UPDATE SET\n  author_name = EXCLUDED.author_name,\n  author_email = EXCLUDED.author_email,\n  title = EXCLUDED.title,\n  message = EXCLUDED.message,\n  committed_date = EXCLUDED.committed_date;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "__REPLACE__POSTGRES_CREDENTIAL_ID__",
+          "name": "Postgres GitMetrics"
+        }
+      }
+    },
+    {
+      "id": "Get_MRs",
+      "name": "Get Merge Requests",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [600, 700],
+      "parameters": {
+        "url": "http://172.24.7.110/api/v4/projects/{{ $json.id }}/merge_requests?per_page=100&scope=all",
+        "method": "GET",
+        "authentication": "headerAuth",
+        "options": {
+          "splitIntoItems": true
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__REPLACE__GITLAB_HTTP_HEADER_AUTH_ID__",
+          "name": "GitLab Token"
+        }
+      }
+    },
+    {
+      "id": "Upsert_MRs",
+      "name": "Upsert MRs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [900, 700],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitmetrics.merge_requests (\n  gitlab_id, project_id, title, state, source_branch, target_branch,\n  created_at, merged_at, closed_at, updated_at\n) VALUES (\n  {{ $json.iid }},\n  (SELECT p.id FROM gitmetrics.projects p WHERE p.gitlab_id = {{ $node[\"Get_Projects\"].json[\"id\"] }}),\n  {{ $json.title }},\n  {{ $json.state }},\n  {{ $json.source_branch }},\n  {{ $json.target_branch }},\n  {{ $json.created_at }},\n  {{ $json.merged_at }},\n  {{ $json.closed_at }},\n  {{ $json.updated_at }}\n)\nON CONFLICT (gitlab_id, project_id) DO UPDATE SET\n  title = EXCLUDED.title,\n  state = EXCLUDED.state,\n  source_branch = EXCLUDED.source_branch,\n  target_branch = EXCLUDED.target_branch,\n  created_at = EXCLUDED.created_at,\n  merged_at = EXCLUDED.merged_at,\n  closed_at = EXCLUDED.closed_at,\n  updated_at = EXCLUDED.updated_at;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "__REPLACE__POSTGRES_CREDENTIAL_ID__",
+          "name": "Postgres GitMetrics"
+        }
+      }
+    },
+    {
+      "id": "Calc_Daily_Metrics",
+      "name": "Calc Daily Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1200, 450],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitmetrics.daily_user_metrics (\n  metric_date, project_id, user_id, commits_count,\n  merge_requests_opened, merge_requests_merged, estimated_hours\n)\nSELECT\n  d.metric_date,\n  d.project_id,\n  d.user_id,\n  COUNT(DISTINCT d.commit_id) AS commits_count,\n  COALESCE(m.mr_opened, 0) AS merge_requests_opened,\n  COALESCE(m.mr_merged, 0) AS merge_requests_merged,\n  LEAST(12, GREATEST(1, EXTRACT(EPOCH FROM (MAX(d.committed_at) - MIN(d.committed_at)))/3600.0)) AS estimated_hours\nFROM (\n  SELECT\n    DATE(c.committed_date) AS metric_date,\n    c.project_id,\n    u.id AS user_id,\n    c.id AS commit_id,\n    c.committed_date AS committed_at\n  FROM gitmetrics.commits c\n  LEFT JOIN gitmetrics.users u ON c.author_name = u.name\n  WHERE committed_date::date = CURRENT_DATE\n) d\nLEFT JOIN (\n  SELECT\n    DATE(created_at) AS metric_date,\n    project_id,\n    author_id AS user_id,\n    COUNT(*) FILTER (WHERE state IN ('opened', 'reopened')) AS mr_opened,\n    COUNT(*) FILTER (WHERE state = 'merged') AS mr_merged\n  FROM gitmetrics.merge_requests\n  WHERE created_at::date = CURRENT_DATE\n  GROUP BY 1,2,3\n) m\n  ON d.metric_date = m.metric_date AND d.project_id = m.project_id AND d.user_id = m.user_id\nGROUP BY d.metric_date, d.project_id, d.user_id, m.mr_opened, m.mr_merged\nON CONFLICT (metric_date, project_id, user_id) DO UPDATE SET\n  commits_count = EXCLUDED.commits_count,\n  merge_requests_opened = EXCLUDED.merge_requests_opened,\n  merge_requests_merged = EXCLUDED.merge_requests_merged,\n  estimated_hours = EXCLUDED.estimated_hours;"
+      },
+      "credentials": {
+        "postgres": {
+          "id": "__REPLACE__POSTGRES_CREDENTIAL_ID__",
+          "name": "Postgres GitMetrics"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Get_Projects": {
+      "main": [
+        [
+          {
+            "node": "Upsert_Projects",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get_Project_Members",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get_Commits",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get_MRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get_Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get_Project_Members": {
+      "main": [
+        [
+          {
+            "node": "Upsert_Users_And_Members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get_Commits": {
+      "main": [
+        [
+          {
+            "node": "Upsert_Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get_MRs": {
+      "main": [
+        [
+          {
+            "node": "Upsert_MRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert_Commits": {
+      "main": [
+        [
+          {
+            "node": "Calc_Daily_Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

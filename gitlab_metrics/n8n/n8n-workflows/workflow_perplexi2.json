@@ -1,0 +1,427 @@
+{
+  "name": "GitLab Metrics Collector",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://172.24.7.110/api/v4/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "per_page",
+                "value": "100"
+              },
+              {
+                "name": "simple",
+                "value": "false"
+              }
+            ]
+          },
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "get-projects",
+      "name": "Get GitLab Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitlab_projects (project_id, project_name, project_path, description, web_url, created_at, last_activity_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (project_id) DO UPDATE SET project_name = EXCLUDED.project_name, last_activity_at = EXCLUDED.last_activity_at, collected_at = NOW()",
+        "options": {
+          "queryParams": [
+            "={{ $json.id }}",
+            "={{ $json.name }}",
+            "={{ $json.path }}",
+            "={{ $json.description }}",
+            "={{ $json.web_url }}",
+            "={{ $json.created_at }}",
+            "={{ $json.last_activity_at }}"
+          ]
+        }
+      },
+      "id": "save-projects",
+      "name": "Save Projects to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL GitLab Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-in-batches",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://172.24.7.110/api/v4/projects/{{ $json.id }}/repository/branches",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "per_page",
+                "value": "100"
+              }
+            ]
+          },
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "get-branches",
+      "name": "Get Branches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [950, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-branches",
+      "name": "Split Branches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitlab_branches (project_id, branch_name, is_default, protected, last_commit_id, last_commit_date) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project_id, branch_name) DO UPDATE SET last_commit_id = EXCLUDED.last_commit_id, last_commit_date = EXCLUDED.last_commit_date, collected_at = NOW()",
+        "options": {
+          "queryParams": [
+            "={{ $node[\"Get GitLab Projects\"].json.id }}",
+            "={{ $json.name }}",
+            "={{ $json.default }}",
+            "={{ $json.protected }}",
+            "={{ $json.commit.id }}",
+            "={{ $json.commit.committed_date }}"
+          ]
+        }
+      },
+      "id": "save-branches",
+      "name": "Save Branches to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1150, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL GitLab Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://172.24.7.110/api/v4/projects/{{ $node[\"Get GitLab Projects\"].json.id }}/repository/commits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "ref_name",
+                "value": "={{ $json.name }}"
+              },
+              {
+                "name": "per_page",
+                "value": "100"
+              },
+              {
+                "name": "with_stats",
+                "value": "true"
+              },
+              {
+                "name": "since",
+                "value": "={{ new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() }}"
+              }
+            ]
+          },
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "get-commits",
+      "name": "Get Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitlab_commits (commit_id, project_id, branch_name, author_name, author_email, committer_name, committer_email, commit_title, commit_message, committed_date, authored_date, additions, deletions, total_changes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (commit_id) DO UPDATE SET collected_at = NOW()",
+        "options": {
+          "queryParams": [
+            "={{ $json.id }}",
+            "={{ $node[\"Get GitLab Projects\"].json.id }}",
+            "={{ $node[\"Get Branches\"].json.name }}",
+            "={{ $json.author_name }}",
+            "={{ $json.author_email }}",
+            "={{ $json.committer_name }}",
+            "={{ $json.committer_email }}",
+            "={{ $json.title }}",
+            "={{ $json.message }}",
+            "={{ $json.committed_date }}",
+            "={{ $json.authored_date }}",
+            "={{ $json.stats.additions || 0 }}",
+            "={{ $json.stats.deletions || 0 }}",
+            "={{ ($json.stats.additions || 0) + ($json.stats.deletions || 0) }}"
+          ]
+        }
+      },
+      "id": "save-commits",
+      "name": "Save Commits to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1550, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL GitLab Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitlab_contributors (project_id, author_name, author_email, total_commits, total_additions, total_deletions, total_changes, first_commit_date, last_commit_date) SELECT project_id, author_name, author_email, COUNT(*) as total_commits, SUM(additions) as total_additions, SUM(deletions) as total_deletions, SUM(total_changes) as total_changes, MIN(committed_date) as first_commit_date, MAX(committed_date) as last_commit_date FROM gitlab_commits WHERE project_id = $1 AND committed_date >= NOW() - INTERVAL '30 days' GROUP BY project_id, author_name, author_email ON CONFLICT (project_id, author_email) DO UPDATE SET total_commits = EXCLUDED.total_commits, total_additions = EXCLUDED.total_additions, total_deletions = EXCLUDED.total_deletions, total_changes = EXCLUDED.total_changes, last_commit_date = EXCLUDED.last_commit_date, collected_at = NOW()",
+        "options": {
+          "queryParams": [
+            "={{ $node[\"Get GitLab Projects\"].json.id }}"
+          ]
+        }
+      },
+      "id": "aggregate-contributors",
+      "name": "Aggregate Contributors",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1750, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL GitLab Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO gitlab_daily_stats (project_id, branch_name, author_email, stat_date, commits_count, additions, deletions, total_changes, estimated_hours) SELECT project_id, branch_name, author_email, DATE(committed_date) as stat_date, COUNT(*) as commits_count, SUM(additions) as additions, SUM(deletions) as deletions, SUM(total_changes) as total_changes, ROUND(COUNT(*) * 0.5, 2) as estimated_hours FROM gitlab_commits WHERE project_id = $1 AND committed_date >= NOW() - INTERVAL '30 days' GROUP BY project_id, branch_name, author_email, DATE(committed_date) ON CONFLICT (project_id, branch_name, author_email, stat_date) DO UPDATE SET commits_count = EXCLUDED.commits_count, additions = EXCLUDED.additions, deletions = EXCLUDED.deletions, total_changes = EXCLUDED.total_changes, estimated_hours = EXCLUDED.estimated_hours, collected_at = NOW()",
+        "options": {
+          "queryParams": [
+            "={{ $node[\"Get GitLab Projects\"].json.id }}"
+          ]
+        }
+      },
+      "id": "aggregate-daily-stats",
+      "name": "Aggregate Daily Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1950, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL GitLab Metrics"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "set-project-data",
+      "name": "Set Project Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1250, 300],
+      "webhookId": ""
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get GitLab Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get GitLab Projects": {
+      "main": [
+        [
+          {
+            "node": "Save Projects to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Projects to DB": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Get Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Branches": {
+      "main": [
+        [
+          {
+            "node": "Split Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Branches": {
+      "main": [
+        [
+          {
+            "node": "Save Branches to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Project Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Project Data": {
+      "main": [
+        [
+          {
+            "node": "Get Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Branches to DB": {
+      "main": [
+        []
+      ]
+    },
+    "Get Commits": {
+      "main": [
+        [
+          {
+            "node": "Save Commits to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Commits to DB": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Contributors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Contributors": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Daily Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

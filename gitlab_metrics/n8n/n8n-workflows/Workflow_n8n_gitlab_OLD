@@ -1,0 +1,219 @@
+﻿{
+  "name": "GitLab Group Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 6,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "id": "1",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "http://172.24.7.110/api/v4/groups/26/projects",
+        "options": {},
+        "headerParameters": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        }
+      },
+      "id": "2",
+      "name": "Get Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const projects = items[0].json;\nreturn projects.map(p => ({ json: { project_id: p.id, repo_name: p.name } }));"
+      },
+      "id": "3",
+      "name": "Split Projects",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "={{`http://172.24.7.110/api/v4/projects/${$json[\"project_id\"]}/repository/commits`}}",
+        "options": {},
+        "headerParameters": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        }
+      },
+      "id": "4",
+      "name": "Get Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const commits = items[0].json;\nconst project = $json;\nreturn commits.map(c => ({ json: { ...c, project_id: project.project_id, repo_name: project.repo_name } }));"
+      },
+      "id": "5",
+      "name": "Split Commits",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "headerAuth",
+        "url": "={{`https://172.24.7.110/api/v4/projects/${$json[\"project_id\"]}/repository/commits/${$json[\"id\"]}/refs`}}",
+        "options": {},
+        "headerParameters": {
+          "parameter": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "REPLACE_WITH_YOUR_GITLAB_TOKEN"
+            }
+          ]
+        }
+      },
+      "id": "6",
+      "name": "Get Commit Branches",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const commit = $json;\nconst refs = items[0].json;\nconst date = new Date(commit.created_at);\nconst day = date.toISOString().split(\"T\")[0];\nconst hour = date.getHours();\n\nreturn [{\n  json: {\n    author: commit.author_name,\n    commit_id: commit.id,\n    message: commit.message,\n    day,\n    hour,\n    branch: refs.map(r => r.name).join(\",\"),\n    project_id: commit.project_id,\n    repo_name: commit.repo_name\n  }\n}];"
+      },
+      "id": "7",
+      "name": "Process Metrics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "gitlab_commits",
+        "columns": [
+          "author",
+          "commit_id",
+          "message",
+          "day",
+          "hour",
+          "branch",
+          "project_id",
+          "repo_name"
+        ],
+        "values": "={{ [$json[\"author\"], $json[\"commit_id\"], $json[\"message\"], $json[\"day\"], $json[\"hour\"], $json[\"branch\"], $json[\"project_id\"], $json[\"repo_name\"]] }}"
+      },
+      "id": "8",
+      "name": "Postgres Save",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "<YOUR_DB_CREDENTIAL_ID>",
+          "name": "Postgres Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Get Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Projects": {
+      "main": [
+        [
+          {
+            "node": "Split Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Projects": {
+      "main": [
+        [
+          {
+            "node": "Get Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commits": {
+      "main": [
+        [
+          {
+            "node": "Split Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Commits": {
+      "main": [
+        [
+          {
+            "node": "Get Commit Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commit Branches": {
+      "main": [
+        [
+          {
+            "node": "Process Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Metrics": {
+      "main": [
+        [
+          {
+            "node": "Postgres Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

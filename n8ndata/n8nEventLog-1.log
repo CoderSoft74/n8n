@@ -1,0 +1,2 @@
+{"__type":"$$EventMessageAudit","id":"132144b0-7881-4007-9746-32cb04a63269","ts":"2025-09-14T23:18:59.193+00:00","eventName":"n8n.audit.user.login.success","message":"n8n.audit.user.login.success","payload":{"userId":"f3d6f915-7712-4fce-aa6e-37fe168c937b","_email":"innavojaruges2371974@gmail.com","_firstName":"Jovanni","_lastName":"Segura","globalRole":"global:owner","authenticationMethod":"email"}}
+{"__type":"$$EventMessageConfirm","confirm":"132144b0-7881-4007-9746-32cb04a63269","ts":"2025-09-14T23:18:59.196+00:00","source":{"id":"0","name":"eventBus"}}

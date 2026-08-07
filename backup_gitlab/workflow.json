@@ -1,0 +1,167 @@
+{
+  "name": "GitLab Backup Diario 14:00",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 14 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-14h",
+      "name": "Cron 14:00 Diario",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "privateKey",
+        "host": "172.24.7.100",
+        "user": "tu_usuario_gitlab",
+        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nCONTENIDO_DE ~/.ssh/gitlab_backup\n-----END OPENSSH PRIVATE KEY-----",
+        "command": "/usr/local/bin/backup_gitlab.sh"
+      },
+      "id": "ssh-backup",
+      "name": "Ejecutar Backup GitLab",
+      "type": "n8n-nodes-base.ssh2",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "boolean": [
+            {
+              "name": "success",
+              "value": "={{ $json.exitCode === 0 }}"
+            }
+          ],
+          "string": [
+            {
+              "name": "log",
+              "value": "={{ $json.stdout + '\\n' + ($json.stderr || '') }}"
+            },
+            {
+              "name": "exitCode",
+              "value": "={{ $json.exitCode }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-result",
+      "name": "Resultado Backup",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "operation": "equal"
+            }
+          ]
+        }
+      },
+      "id": "if-success",
+      "name": "✅ Éxito?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@tu-empresa.com",
+        "toEmail": "tu-email@empresa.com",
+        "subject": "=GitLab Backup ✅ OK - {{ $now.format('YYYY-MM-DD HH:mm') }}",
+        "emailType": "text",
+        "text": "=🚀 Backup GitLab DIARIO FINALIZADO CORRECTAMENTE\n\n📅 {{ $now.format('DD/MM/YYYY HH:mm') }}\n\n✅ Estado: ÉXITO\n📁 Ruta: /home/backup/gitlab/\n\n📊 LOG COMPLETO:\n{{ $json.log }}\n\n⚙️ Próximo: Mañana 14:00"
+      },
+      "id": "email-ok",
+      "name": "Email Éxito",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@tu-empresa.com",
+        "toEmail": "tu-email@empresa.com",
+        "subject": "=🚨 ERROR Backup GitLab - {{ $now.format('YYYY-MM-DD HH:mm') }}",
+        "emailType": "text",
+        "text": "=❌ BACKUP GITLAB FALLÓ\n\n📅 {{ $now.format('DD/MM/YYYY HH:mm') }}\n\n💥 Código error: {{ $json.exitCode }}\n📁 Ruta backups: /home/backup/gitlab/\n\n🔍 LOG DE ERROR:\n{{ $json.log }}\n\n⚠️ Revisa inmediatamente el servidor GitLab (172.24.7.100)"
+      },
+      "id": "email-error",
+      "name": "Email Error ⚠️",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    }
+  ],
+  "connections": {
+    "Cron 14:00 Diario": {
+      "main": [
+        [
+          {
+            "node": "Ejecutar Backup GitLab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ejecutar Backup GitLab": {
+      "main": [
+        [
+          {
+            "node": "Resultado Backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resultado Backup": {
+      "main": [
+        [
+          {
+            "node": "✅ Éxito?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ Éxito?": {
+      "main": [
+        [
+          {
+            "node": "Email Éxito",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Error ⚠️",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

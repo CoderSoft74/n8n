@@ -1,0 +1,656 @@
+{
+  "name": "GitLab Metrics Complete v2",
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [256, 16],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "webhookId": "gitlab-metrics-schedule"
+    },
+    {
+      "id": "get-users",
+      "name": "Get All Users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [464, 16],
+      "parameters": {
+        "url": "=http://172.24.7.110/api/v4/users?per_page=100&active=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gitlabApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $vars.GITLAB_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "responseFormat": "json"
+          }
+        }
+      },
+      "credentials": {
+        "gitlabApi": {
+          "id": "2lgdNuXtXVrtqYU1",
+          "name": "GitLab account"
+        }
+      }
+    },
+    {
+      "id": "filter-bots",
+      "name": "Filter Bots and Service Accounts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [688, 16],
+      "parameters": {
+        "jsCode": "const filteredUsers = [];\n\nconst botPatterns = [\n  /_bot_/i,\n  /^bot-/i,\n  /-bot$/i,\n  /^gitlab-/i,\n  /-token$/i,\n  /token-/i,\n  /^project_\\d+_bot_/,\n  /^group_\\d+_bot_/\n];\n\nconst serviceUsernames = [\n  'ghost',\n  'root',\n  'alert-bot',\n  'support-bot',\n  'sonarqube',\n  'gitlab-support'\n];\n\nconst serviceNameKeywords = [\n  'token',\n  'bot',\n  'service account',\n  'service',\n  'CI/CD',\n  'GitLab',\n  'Alert',\n  'Support',\n  'SonarQube',\n  'API'\n];\n\nfor (const item of items) {\n  const user = item.json;\n  \n  const isBotUsername = botPatterns.some(pattern => pattern.test(user.username)) ||\n                       serviceUsernames.includes(user.username);\n  \n  const isBotName = serviceNameKeywords.some(keyword => \n    user.name && user.name.toLowerCase().includes(keyword.toLowerCase())\n  );\n  \n  const isBotEmail = user.email && (\n    user.email.includes('noreply') ||\n    user.email.includes('no-reply') ||\n    user.email.includes('bot@') ||\n    user.email.includes('service@')\n  );\n  \n  const isRealUser = !isBotUsername && !isBotName && !isBotEmail;\n  \n  if (isRealUser) {\n    filteredUsers.push({\n      json: {\n        ...user,\n        is_bot: false\n      }\n    });\n  } else {\n    console.log(`Filtrado bot/service: ${user.username} (${user.name})`);\n  }\n}\n\nconsole.log(`Usuarios totales: ${items.length}, Usuarios reales: ${filteredUsers.length}`);\nreturn filteredUsers;"
+      }
+    },
+    {
+      "id": "save-users",
+      "name": "Save Users to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [1008, 16],
+      "parameters": {
+        "schema": "public",
+        "table": "users",
+        "dataMode": "defineBelow",
+        "valuesToSend": {
+          "values": [
+            {
+              "column": "gitlab_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "column": "username",
+              "value": "={{ $json.username }}"
+            },
+            {
+              "column": "name",
+              "value": "={{ $json.name }}"
+            },
+            {
+              "column": "avatar_url",
+              "value": "={{ $json.avatar_url }}"
+            },
+            {
+              "column": "email",
+              "value": "={{ $json.email || $json.public_email || '' }}"
+            },
+            {
+              "column": "state",
+              "value": "={{ $json.state }}"
+            },
+            {
+              "column": "web_url",
+              "value": "={{ $json.web_url }}"
+            },
+            {
+              "column": "is_bot",
+              "value": "={{ $json.is_bot || false }}"
+            },
+            {
+              "column": "last_sync",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {
+          "skipOnConflict": true,
+          "conflictColumns": ["gitlab_id"],
+          "upsert": true
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "M8NqqrbPr7I8WHpM",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "id": "get-all-projects",
+      "name": "Get All Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [464, 200],
+      "parameters": {
+        "url": "=http://172.24.7.110/api/v4/projects",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gitlabApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "per_page",
+              "value": "100"
+            },
+            {
+              "name": "simple",
+              "value": "false"
+            },
+            {
+              "name": "order_by",
+              "value": "last_activity_at"
+            },
+            {
+              "name": "sort",
+              "value": "desc"
+            },
+            {
+              "name": "statistics",
+              "value": "true"
+            },
+            {
+              "name": "with_custom_attributes",
+              "value": "false"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $vars.GITLAB_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "gitlabApi": {
+          "id": "2lgdNuXtXVrtqYU1",
+          "name": "GitLab account"
+        }
+      }
+    },
+    {
+      "id": "process-projects",
+      "name": "Process Projects Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [704, 200],
+      "parameters": {
+        "jsCode": "const processedProjects = [];\n\nfor (const item of items) {\n  const project = item.json;\n  \n  const namespace = project.namespace || {};\n  const owner = project.owner || {};\n  \n  processedProjects.push({\n    json: {\n      gitlab_id: project.id,\n      name: project.name,\n      name_with_namespace: project.name_with_namespace,\n      description: project.description || '',\n      path: project.path,\n      path_with_namespace: project.path_with_namespace,\n      web_url: project.web_url,\n      ssh_url: project.ssh_url_to_repo,\n      http_url: project.http_url_to_repo,\n      default_branch: project.default_branch || 'main',\n      visibility: project.visibility,\n      owner_id: owner.id || null,\n      namespace_id: namespace.id || null,\n      namespace_name: namespace.name || null,\n      last_activity_at: project.last_activity_at,\n      created_at_gitlab: project.created_at,\n      updated_at_gitlab: project.updated_at,\n      archived: project.archived || false,\n      forks_count: project.forks_count || 0,\n      star_count: project.star_count || 0,\n      open_issues_count: project.open_issues_count || 0,\n      creator_id: project.creator_id || null,\n      commit_count: project.statistics?.commit_count || 0,\n      storage_size: project.statistics?.storage_size || 0,\n      repository_size: project.statistics?.repository_size || 0,\n      processed_at: new Date().toISOString(),\n      _debug: false\n    }\n  });\n}\n\nconsole.log(`Procesados ${processedProjects.length} proyectos`);\nreturn processedProjects;"
+      }
+    },
+    {
+      "id": "save-projects",
+      "name": "Save Projects to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [1008, 200],
+      "parameters": {
+        "schema": "public",
+        "table": "projects",
+        "dataMode": "defineBelow",
+        "valuesToSend": {
+          "values": [
+            {
+              "column": "gitlab_id",
+              "value": "={{ $json.gitlab_id }}"
+            },
+            {
+              "column": "name",
+              "value": "={{ $json.name }}"
+            },
+            {
+              "column": "name_with_namespace",
+              "value": "={{ $json.name_with_namespace }}"
+            },
+            {
+              "column": "description",
+              "value": "={{ $json.description }}"
+            },
+            {
+              "column": "path",
+              "value": "={{ $json.path }}"
+            },
+            {
+              "column": "path_with_namespace",
+              "value": "={{ $json.path_with_namespace }}"
+            },
+            {
+              "column": "web_url",
+              "value": "={{ $json.web_url }}"
+            },
+            {
+              "column": "ssh_url",
+              "value": "={{ $json.ssh_url }}"
+            },
+            {
+              "column": "http_url",
+              "value": "={{ $json.http_url }}"
+            },
+            {
+              "column": "default_branch",
+              "value": "={{ $json.default_branch }}"
+            },
+            {
+              "column": "visibility",
+              "value": "={{ $json.visibility }}"
+            },
+            {
+              "column": "owner_id",
+              "value": "={{ $json.owner_id }}"
+            },
+            {
+              "column": "namespace_id",
+              "value": "={{ $json.namespace_id }}"
+            },
+            {
+              "column": "namespace_name",
+              "value": "={{ $json.namespace_name }}"
+            },
+            {
+              "column": "last_activity_at",
+              "value": "={{ $json.last_activity_at }}"
+            },
+            {
+              "column": "created_at_gitlab",
+              "value": "={{ $json.created_at_gitlab }}"
+            },
+            {
+              "column": "updated_at_gitlab",
+              "value": "={{ $json.updated_at_gitlab }}"
+            },
+            {
+              "column": "archived",
+              "value": "={{ $json.archived }}"
+            },
+            {
+              "column": "forks_count",
+              "value": "={{ $json.forks_count }}"
+            },
+            {
+              "column": "star_count",
+              "value": "={{ $json.star_count }}"
+            },
+            {
+              "column": "open_issues_count",
+              "value": "={{ $json.open_issues_count }}"
+            },
+            {
+              "column": "creator_id",
+              "value": "={{ $json.creator_id }}"
+            },
+            {
+              "column": "last_sync",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {
+          "skipOnConflict": true,
+          "conflictColumns": ["gitlab_id"],
+          "upsert": true
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "M8NqqrbPr7I8WHpM",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "id": "get-project-members",
+      "name": "Get Project Members",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [704, 400],
+      "parameters": {
+        "url": "=http://172.24.7.110/api/v4/projects/{{ $json.gitlab_id }}/members/all",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gitlabApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $vars.GITLAB_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "gitlabApi": {
+          "id": "2lgdNuXtXVrtqYU1",
+          "name": "GitLab account"
+        }
+      }
+    },
+    {
+      "id": "create-relations",
+      "name": "Create User-Project Relations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1008, 400],
+      "parameters": {
+        "jsCode": "const relations = [];\n\nconst accessLevelMap = {\n  10: 'Guest',\n  20: 'Reporter',\n  30: 'Developer',\n  40: 'Maintainer',\n  50: 'Owner'\n};\n\nlet projectsProcessed = 0;\nlet totalMembers = 0;\n\nfor (const item of items) {\n  projectsProcessed++;\n  \n  const project = item.context?.project || item.json.project || {};\n  const members = Array.isArray(item.json) ? item.json : [];\n  \n  totalMembers += members.length;\n  \n  for (const member of members) {\n    if (!member.id || !project.gitlab_id) {\n      console.warn('Miembro o proyecto sin ID:', { member, project });\n      continue;\n    }\n    \n    const accessLevel = member.access_level || 30;\n    const role = accessLevelMap[accessLevel] || 'Unknown';\n    const membershipType = accessLevel >= 40 ? 'owner' : 'collaborator';\n    \n    relations.push({\n      json: {\n        user_gitlab_id: member.id,\n        project_gitlab_id: project.gitlab_id,\n        username: member.username,\n        user_name: member.name,\n        project_name: project.name,\n        project_path_with_namespace: project.path_with_namespace || project.name,\n        access_level: accessLevel,\n        user_role: role,\n        membership_type: membershipType,\n        notification_level: member.notification_level || 3,\n        expires_at: member.expires_at || null,\n        created_at_gitlab: member.created_at || new Date().toISOString(),\n        last_activity_at: project.last_activity_at || new Date().toISOString(),\n        is_direct_member: true,\n        sync_timestamp: new Date().toISOString(),\n        _debug: false\n      }\n    });\n  }\n}\n\nconsole.log(`\\n=== RESUMEN DE RELACIONES ===\\nProyectos procesados: ${projectsProcessed}\\nMiembros totales: ${totalMembers}\\nRelaciones creadas: ${relations.length}\\n`);\n\nreturn relations;"
+      }
+    },
+    {
+      "id": "save-relations",
+      "name": "Save Relations to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.1,
+      "position": [1200, 400],
+      "parameters": {
+        "schema": "public",
+        "table": "user_project_relations",
+        "dataMode": "defineBelow",
+        "valuesToSend": {
+          "values": [
+            {
+              "column": "user_gitlab_id",
+              "value": "={{ $json.user_gitlab_id }}"
+            },
+            {
+              "column": "project_gitlab_id",
+              "value": "={{ $json.project_gitlab_id }}"
+            },
+            {
+              "column": "username",
+              "value": "={{ $json.username }}"
+            },
+            {
+              "column": "user_name",
+              "value": "={{ $json.user_name }}"
+            },
+            {
+              "column": "project_name",
+              "value": "={{ $json.project_name }}"
+            },
+            {
+              "column": "project_path_with_namespace",
+              "value": "={{ $json.project_path_with_namespace }}"
+            },
+            {
+              "column": "access_level",
+              "value": "={{ $json.access_level }}"
+            },
+            {
+              "column": "user_role",
+              "value": "={{ $json.user_role }}"
+            },
+            {
+              "column": "membership_type",
+              "value": "={{ $json.membership_type }}"
+            },
+            {
+              "column": "notification_level",
+              "value": "={{ $json.notification_level }}"
+            },
+            {
+              "column": "expires_at",
+              "value": "={{ $json.expires_at }}"
+            },
+            {
+              "column": "created_at_gitlab",
+              "value": "={{ $json.created_at_gitlab }}"
+            },
+            {
+              "column": "last_activity_at",
+              "value": "={{ $json.last_activity_at }}"
+            },
+            {
+              "column": "is_direct_member",
+              "value": "={{ $json.is_direct_member }}"
+            },
+            {
+              "column": "sync_timestamp",
+              "value": "={{ $json.sync_timestamp }}"
+            }
+          ]
+        },
+        "options": {
+          "skipOnConflict": true,
+          "conflictColumns": ["user_gitlab_id", "project_gitlab_id"],
+          "upsert": true
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "M8NqqrbPr7I8WHpM",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "id": "prepare-commits-request",
+      "name": "Prepare Commits Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [464, 600],
+      "parameters": {
+        "jsCode": "const commitRequests = [];\n\nconst cutoffDate = new Date();\ncutoffDate.setDate(cutoffDate.getDate() - 90);\n\nlet activeProjects = 0;\nlet inactiveProjects = 0;\n\nfor (const item of items) {\n  const project = item.json;\n  \n  const lastActivity = project.last_activity_at ? new Date(project.last_activity_at) : null;\n  const isActive = lastActivity && lastActivity > cutoffDate;\n  \n  if (isActive) {\n    activeProjects++;\n    \n    const endDate = new Date();\n    const startDate = new Date();\n    startDate.setDate(startDate.getDate() - 30);\n    \n    commitRequests.push({\n      json: {\n        projectId: project.gitlab_id,\n        projectName: project.name,\n        since: startDate.toISOString().split('T')[0],\n        until: endDate.toISOString().split('T')[0],\n        per_page: 100,\n        with_stats: true,\n        project_data: {\n          name: project.name,\n          path_with_namespace: project.path_with_namespace,\n          last_activity_at: project.last_activity_at\n        },\n        _request_timestamp: new Date().toISOString(),\n        _days_back: 30\n      }\n    });\n  } else {\n    inactiveProjects++;\n  }\n}\n\nconsole.log(`\\n=== SOLICITUDES DE COMMITS ===\\nProyectos totales: ${items.length}\\nProyectos activos (últimos 90 días): ${activeProjects}\\nProyectos inactivos: ${inactiveProjects}\\nSolicitudes generadas: ${commitRequests.length}\\n`);\n\nreturn commitRequests;"
+      }
+    },
+    {
+      "id": "get-project-commits",
+      "name": "Get Project Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [704, 600],
+      "parameters": {
+        "url": "=http://172.24.7.110/api/v4/projects/{{ $json.projectId }}/repository/commits",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gitlabApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{ $json.since }}"
+            },
+            {
+              "name": "until",
+              "value": "={{ $json.until }}"
+            },
+            {
+              "name": "per_page",
+              "value": "={{ $json.per_page || 100 }}"
+            },
+            {
+              "name": "with_stats",
+              "value": "={{ $json.with_stats || true }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "PRIVATE-TOKEN",
+              "value": "={{ $vars.GITLAB_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "gitlabApi": {
+          "id": "2lgdNuXtXVrtqYU1",
+          "name": "GitLab account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get All Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Users": {
+      "main": [
+        [
+          {
+            "node": "Filter Bots and Service Accounts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Bots and Service Accounts": {
+      "main": [
+        [
+          {
+            "node": "Save Users to PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Projects": {
+      "main": [
+        [
+          {
+            "node": "Process Projects Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Projects Data": {
+      "main": [
+        [
+          {
+            "node": "Save Projects to PostgreSQL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Project Members",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Commits Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Project Members": {
+      "main": [
+        [
+          {
+            "node": "Create User-Project Relations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create User-Project Relations": {
+      "main": [
+        [
+          {
+            "node": "Save Relations to PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Commits Requests": {
+      "main": [
+        [
+          {
+            "node": "Get Project Commits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Project Commits": {
+      "main": [
+        []
+      ]
+    },
+    "Save Users to PostgreSQL": {
+      "main": [
+        []
+      ]
+    },
+    "Save Projects to PostgreSQL": {
+      "main": [
+        []
+      ]
+    },
+    "Save Relations to PostgreSQL": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "versionId": "workflow-v2-redesign",
+  "tags": ["gitlab", "metrics", "productivity", "monitoring"],
+  "active": false,
+  "meta": {
+    "instanceId": "33d3118021c86740b1a15c617d0d9d55d063df19d7374e00a1b8953c3734f20d"
+  }
+}
